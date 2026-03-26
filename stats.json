@@ -1,0 +1,54 @@
+{
+  "911853290189361153": {
+    "messages": 8,
+    "mutes": 0,
+    "voiceTime": 0,
+    "casinoPlays": 0,
+    "casinoWins": 0,
+    "transfers": 0,
+    "moves": 0,
+    "raffleWins": 0,
+    "rpsWins": 0,
+    "timeouts": 0,
+    "radioPlays": 0,
+    "weatherChecks": 0,
+    "newsChecks": 0,
+    "translates": 0,
+    "blackjackWins": 0,
+    "pokerWins": 0,
+    "diceWins": 0,
+    "slotWins": 0,
+    "daily": {
+      "day": 8,
+      "week": 8,
+      "month": 8
+    },
+    "lastUpdate": 1774184676860
+  },
+  "1222318031800373258": {
+    "messages": 6,
+    "mutes": 0,
+    "voiceTime": 0,
+    "casinoPlays": 0,
+    "casinoWins": 0,
+    "transfers": 0,
+    "moves": 0,
+    "raffleWins": 0,
+    "rpsWins": 0,
+    "timeouts": 0,
+    "radioPlays": 0,
+    "weatherChecks": 0,
+    "newsChecks": 0,
+    "translates": 0,
+    "blackjackWins": 0,
+    "pokerWins": 0,
+    "diceWins": 0,
+    "slotWins": 0,
+    "daily": {
+      "day": 6,
+      "week": 6,
+      "month": 6
+    },
+    "lastUpdate": 1774184766390
+  }
+}

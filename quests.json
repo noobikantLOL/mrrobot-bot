@@ -1,0 +1,91 @@
+{
+  "1329415018629828610": {
+    "daily": {
+      "voice30": 342647,
+      "voice30_done": true,
+      "msg10": 12,
+      "msg10_done": true
+    },
+    "lastReset": 1774108023167
+  },
+  "911853290189361153": {
+    "daily": {
+      "msg10": 91,
+      "msg10_done": true,
+      "casino3": 14,
+      "casino3_done": true,
+      "voice30": null
+    },
+    "lastReset": 1774108047463
+  },
+  "1193729109004660779": {
+    "daily": {
+      "msg10": 111,
+      "casino3": 5,
+      "casino3_done": true,
+      "voice30": 318195,
+      "msg10_done": true,
+      "voice30_done": true
+    },
+    "lastReset": 1774108083314
+  },
+  "942391564666290178": {
+    "daily": {
+      "voice30": null,
+      "msg10": 12,
+      "voice30_done": true,
+      "msg10_done": true
+    },
+    "lastReset": 1774108223272
+  },
+  "1222318031800373258": {
+    "daily": {
+      "voice30": null,
+      "voice30_done": true,
+      "msg10": 114,
+      "msg10_done": true,
+      "casino3": 9,
+      "casino3_done": true
+    },
+    "lastReset": 1774152150750
+  },
+  "1151102222634074172": {
+    "daily": {
+      "msg10": 28,
+      "voice30": 53141,
+      "voice30_done": true,
+      "msg10_done": true
+    },
+    "lastReset": 1774158089317
+  },
+  "1473573334628175883": {
+    "daily": {
+      "msg10": 28,
+      "msg10_done": true
+    },
+    "lastReset": 1774180731087
+  },
+  "1240270345936834641": {
+    "active": [
+      {
+        "type": "crypto_trade",
+        "target": 5,
+        "reward": 150,
+        "desc": "Сделать 5 сделок на бирже"
+      },
+      {
+        "type": "voice",
+        "target": 10,
+        "reward": 10,
+        "desc": "Провести 10 мин в войсе"
+      },
+      {
+        "type": "msg",
+        "target": 10,
+        "reward": 25,
+        "desc": "Отправить 10 сообщений"
+      }
+    ],
+    "nextUpdate": 1774268185356
+  }
+}

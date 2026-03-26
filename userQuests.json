@@ -1,0 +1,194 @@
+{
+  "911853290189361153": {
+    "active": [
+      {
+        "type": "crypto_trade",
+        "target": 5,
+        "reward": 150,
+        "desc": "Сделать 5 сделок на бирже",
+        "id": "1774517773335_0_crypto_trade_5",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "duel",
+        "target": 3,
+        "reward": 200,
+        "desc": "Выиграть в дуэли 3 раза",
+        "id": "1774517773335_1_duel_3",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "hack_win",
+        "target": 3,
+        "reward": 200,
+        "desc": "Успешно взломать сервер 3 раза",
+        "id": "1774517773335_2_hack_win_3",
+        "progress": 0,
+        "completed": false
+      }
+    ],
+    "nextUpdate": 1774528573335
+  },
+  "1193729109004660779": {
+    "active": [
+      {
+        "type": "msg",
+        "target": 50,
+        "reward": 100,
+        "desc": "Отправить 50 сообщений",
+        "id": "1774509541058_0_msg_50",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "transfer",
+        "target": 10,
+        "reward": 500,
+        "desc": "Перевести CT 10 раз",
+        "id": "1774509541058_1_transfer_10",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "crypto_trade",
+        "target": 20,
+        "reward": 600,
+        "desc": "Сделать 20 сделок на бирже",
+        "id": "1774509541058_2_crypto_trade_20",
+        "progress": 0,
+        "completed": false
+      }
+    ],
+    "nextUpdate": 1774520341058
+  },
+  "942391564666290178": {
+    "active": [
+      {
+        "type": "hack_win",
+        "target": 3,
+        "reward": 200,
+        "desc": "Успешно взломать сервер 3 раза",
+        "id": "1774522142282_0_hack_win_3",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "transfer",
+        "target": 10,
+        "reward": 500,
+        "desc": "Перевести CT 10 раз",
+        "id": "1774522142282_1_transfer_10",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "rps",
+        "target": 10,
+        "reward": 300,
+        "desc": "Выиграть 10 раз в КНБ",
+        "id": "1774522142282_2_rps_10",
+        "progress": 0,
+        "completed": false
+      }
+    ],
+    "nextUpdate": 1774532942283
+  },
+  "1151102222634074172": {
+    "active": [
+      {
+        "type": "raffle",
+        "target": 5,
+        "reward": 300,
+        "desc": "Выиграть в розыгрыше 5 раз",
+        "id": "1774434816904_0_raffle_5",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "rps",
+        "target": 3,
+        "reward": 75,
+        "desc": "Выиграть 3 раза в КНБ",
+        "id": "1774434816904_1_rps_3",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "transfer",
+        "target": 3,
+        "reward": 100,
+        "desc": "Перевести CT 3 раза",
+        "id": "1774434816904_2_transfer_3",
+        "progress": 0,
+        "completed": false
+      }
+    ],
+    "nextUpdate": 1774445616904
+  },
+  "1222318031800373258": {
+    "active": [
+      {
+        "type": "hack_win",
+        "target": 3,
+        "reward": 200,
+        "desc": "Успешно взломать сервер 3 раза",
+        "id": "1774521267303_0_hack_win_3",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "binary_win",
+        "target": 3,
+        "reward": 150,
+        "desc": "Победить в бинарном коде 3 раза",
+        "id": "1774521267303_1_binary_win_3",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "crypto_trade",
+        "target": 5,
+        "reward": 150,
+        "desc": "Сделать 5 сделок на бирже",
+        "id": "1774521267303_2_crypto_trade_5",
+        "progress": 0,
+        "completed": false
+      }
+    ],
+    "nextUpdate": 1774532067303
+  },
+  "1329415018629828610": {
+    "active": [
+      {
+        "type": "crypto_profit",
+        "target": 1000,
+        "reward": 500,
+        "desc": "Заработать на бирже 1000 CT",
+        "id": "1774517925764_0_crypto_profit_1000",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "transfer",
+        "target": 3,
+        "reward": 100,
+        "desc": "Перевести CT 3 раза",
+        "id": "1774517925764_1_transfer_3",
+        "progress": 0,
+        "completed": false
+      },
+      {
+        "type": "hack_win",
+        "target": 3,
+        "reward": 200,
+        "desc": "Успешно взломать сервер 3 раза",
+        "id": "1774517925764_2_hack_win_3",
+        "progress": 0,
+        "completed": false
+      }
+    ],
+    "nextUpdate": 1774528725764
+  }
+}
