@@ -3,23 +3,18 @@ const { Client, GatewayIntentBits, Partials, ActionRowBuilder, ButtonBuilder, Bu
 const { 
     joinVoiceChannel, 
     createAudioPlayer, 
-    createAudioResource,
-    AudioPlayerStatus,
-    VoiceConnectionStatus
+    createAudioResource
 } = require('@discordjs/voice');
 const fetch = require('node-fetch');
 const fs = require('fs');
-const ytdl = require('yt-dlp-exec');
-const { createCanvas } = require('canvas');
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
 
 let opus;
 try { opus = require('@discordjs/opus'); } catch { opus = require('opusscript'); }
 
 // ========== НАСТРОЙКИ ==========
-const TOKEN = 'MTQ3NzMwMTkzMzEzMDkwNzcwMQ.GCSVVd.TtBk9PinZjdaXbFTXjTy07EoO3Wq59a6dMC5VU';
+const TOKEN = process.env.DISCORD_TOKEN;
 const PREFIX = '!';
 const MIN_BET = 25;
 const JACKPOT_START = 0;
@@ -50,16 +45,13 @@ const client = new Client({
 
 // ========== ХРАНИЛИЩА ==========
 const voiceConnections = new Map();
-let currentPlayer = null;
 let voiceStartTime = new Map();
 let economy = new Map();
 let warnings = new Map();
 let achievements = new Map();
 let userQuests = new Map();
 let userQuestProgress = new Map();
-let subscriptions = new Map();
 let casinoWinCount = new Map();
-let dailyStats = new Map();
 let jackpot = JACKPOT_START;
 let casinoSpent = new Map();
 let oneTimeSpent = new Map();
@@ -87,6 +79,7 @@ let activeBoosts = new Map();
 let hackGames = new Map();
 let userNFTs = new Map();
 let lastBoostCheck = Date.now();
+let sniperGames = new Map();
 
 // ========== КУРС CT → РУБЛЬ ==========
 let ctRate = 0.001;
@@ -784,55 +777,12 @@ function updateCryptoPrices(guild) {
             });
         }
     }
-    
-    // Отправляем данные для live графиков
-    broadcastPrices();
 }
 
 function getNextUpdateTimeForCrypto(crypto) {
     if (!cryptoPrices[crypto] || !cryptoPrices[crypto].nextUpdate) return 0;
     const remaining = cryptoPrices[crypto].nextUpdate - Date.now();
     return Math.max(0, Math.floor(remaining / 1000));
-}
-
-// ========== ГРАФИК ==========
-async function createCryptoGraph(cryptoName, history) {
-    const validHistory = history.filter(h => h && h.price && !isNaN(h.price) && h.price > 0);
-    if (validHistory.length < 2) throw new Error('Недостаточно данных');
-    const width = 800, height = 400;
-    const canvas = createCanvas(width, height);
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#1a1a2e';
-    ctx.fillRect(0, 0, width, height);
-    ctx.strokeStyle = '#333';
-    for (let i = 0; i <= 4; i++) {
-        const y = height - (i * height / 4);
-        ctx.beginPath();
-        ctx.moveTo(50, y);
-        ctx.lineTo(width - 30, y);
-        ctx.stroke();
-    }
-    const prices = validHistory.map(h => h.price);
-    const maxP = Math.max(...prices, 1);
-    const minP = Math.min(...prices);
-    const range = maxP - minP || 1;
-    ctx.beginPath();
-    ctx.strokeStyle = '#0f0';
-    ctx.lineWidth = 2;
-    for (let i = 0; i < prices.length; i++) {
-        const x = 50 + (i / (prices.length - 1)) * (width - 80);
-        const y = height - 30 - ((prices[i] - minP) / range) * (height - 60);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 20px Arial';
-    ctx.fillText(`${cryptoName} - График цены`, width / 2 - 100, 30);
-    ctx.font = '16px Arial';
-    ctx.fillStyle = '#0f0';
-    ctx.fillText(`Текущая: ${validHistory[validHistory.length-1]?.price || 0} CT`, width - 150, 60);
-    return canvas.toBuffer();
 }
 
 // ========== КУРС CT → РУБЛЬ ==========
@@ -921,7 +871,6 @@ async function checkAchievements(userId, guild = null) {
     const spent = casinoSpent.get(userId) || 0;
     const oneTime = oneTimeSpent.get(userId) || 0;
     const transferred = transfersMade.get(userId) || 0;
-    const weeks = top1Weeks.get(userId) || 0;
     const msgs = messageCount.get(userId) || 0;
     const roles = guild?.members?.cache?.get(userId)?.roles?.cache?.size || 0;
     const profit = traderStats.get(userId)?.profit || 0;
@@ -932,7 +881,6 @@ async function checkAchievements(userId, guild = null) {
     const hasProperty = userProperties.has(userId);
     const hasWeapon = userWeapons.has(userId);
     const nftCount = (userNFTs.get(userId) || []).length;
-    const hackWins = 0; // можно добавить счётчик побед во взломе
     let earned = achievements.get(userId);
     if (!earned || !Array.isArray(earned)) { earned = []; achievements.set(userId, earned); }
     for (let [key, ach] of Object.entries(ALL_ACHIEVEMENTS)) {
@@ -988,375 +936,36 @@ function getExtendedLeaderboard(guild) {
     return stats;
 }
 
-// ========== ВЕБ-СЕРВЕР ДЛЯ 3D КАЗИНО И ГРАФИКОВ ==========
+// ========== ВЕБ-СЕРВЕР ==========
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
 
 app.use(express.json());
 
-// 3D Казино страница
-app.get('/casino', (req, res) => {
-    const userId = req.query.user;
-    res.send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Elliot - 3D Casino</title>
-            <style>
-                body { margin: 0; overflow: hidden; font-family: 'Courier New', monospace; }
-                #info {
-                    position: absolute;
-                    top: 20px;
-                    left: 20px;
-                    color: white;
-                    background: rgba(0,0,0,0.7);
-                    padding: 10px 20px;
-                    border-radius: 10px;
-                    z-index: 100;
-                    pointer-events: none;
-                }
-                #controls {
-                    position: absolute;
-                    bottom: 20px;
-                    left: 0;
-                    right: 0;
-                    text-align: center;
-                    z-index: 100;
-                }
-                button {
-                    background: #ff0000;
-                    color: white;
-                    border: none;
-                    padding: 15px 30px;
-                    font-size: 18px;
-                    margin: 10px;
-                    border-radius: 10px;
-                    cursor: pointer;
-                    font-family: monospace;
-                    font-weight: bold;
-                }
-                button:hover { background: #cc0000; transform: scale(1.05); }
-                .result {
-                    position: absolute;
-                    top: 50%;
-                    left: 50%;
-                    transform: translate(-50%, -50%);
-                    color: gold;
-                    font-size: 48px;
-                    text-shadow: 0 0 20px rgba(0,0,0,0.5);
-                    z-index: 200;
-                    background: rgba(0,0,0,0.8);
-                    padding: 20px 40px;
-                    border-radius: 20px;
-                    display: none;
-                    white-space: nowrap;
-                }
-            </style>
-        </head>
-        <body>
-            <div id="info">
-                <h2>🎰 3D CASINO</h2>
-                <div>Баланс: <span id="balance">0</span> CT</div>
-                <div>Ставка: <input type="number" id="bet" value="100" min="25" style="width:100px"> CT</div>
-            </div>
-            <div id="controls">
-                <button id="spin">🎲 SPIN 🎲</button>
-            </div>
-            <div id="result" class="result"></div>
-            
-            <script type="importmap">
-                { "imports": { "three": "https://unpkg.com/three@0.128.0/build/three.module.js" } }
-            </script>
-            <script type="module">
-                import * as THREE from 'three';
-                import { OrbitControls } from 'https://unpkg.com/three@0.128.0/examples/jsm/controls/OrbitControls.js';
-                
-                const scene = new THREE.Scene();
-                scene.background = new THREE.Color(0x050510);
-                scene.fog = new THREE.FogExp2(0x050510, 0.002);
-                
-                const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
-                camera.position.set(5, 4, 8);
-                camera.lookAt(0, 0, 0);
-                
-                const renderer = new THREE.WebGLRenderer({ antialias: true });
-                renderer.setSize(window.innerWidth, window.innerHeight);
-                renderer.shadowMap.enabled = true;
-                document.body.appendChild(renderer.domElement);
-                
-                const controls = new OrbitControls(camera, renderer.domElement);
-                controls.enableDamping = true;
-                controls.autoRotate = true;
-                controls.autoRotateSpeed = 0.5;
-                
-                const ambientLight = new THREE.AmbientLight(0x404040);
-                scene.add(ambientLight);
-                const mainLight = new THREE.DirectionalLight(0xffffff, 1);
-                mainLight.position.set(5, 10, 7);
-                mainLight.castShadow = true;
-                scene.add(mainLight);
-                const backLight = new THREE.PointLight(0xff0000, 0.5);
-                backLight.position.set(-2, 2, -3);
-                scene.add(backLight);
-                const fillLight = new THREE.PointLight(0x00ff00, 0.3);
-                fillLight.position.set(3, 1, 2);
-                scene.add(fillLight);
-                
-                const gridHelper = new THREE.GridHelper(20, 20, 0xff00ff, 0x333333);
-                gridHelper.position.y = -1;
-                scene.add(gridHelper);
-                
-                const floorMat = new THREE.MeshStandardMaterial({ color: 0x111122, roughness: 0.5, metalness: 0.8 });
-                const floor = new THREE.Mesh(new THREE.PlaneGeometry(15, 15), floorMat);
-                floor.rotation.x = -Math.PI / 2;
-                floor.position.y = -1;
-                floor.receiveShadow = true;
-                scene.add(floor);
-                
-                const reels = [];
-                const symbols = ['🍒', '🍋', '🍊', '🍉', '⭐', '💎'];
-                const colors = [0xff3333, 0xffdd44, 0xff8844, 0x44ff44, 0xffdd88, 0xff44ff];
-                
-                for (let i = -1; i <= 1; i++) {
-                    const group = new THREE.Group();
-                    const reelMat = new THREE.MeshStandardMaterial({ color: 0x222233, metalness: 0.7, roughness: 0.3 });
-                    const reelBase = new THREE.Mesh(new THREE.BoxGeometry(1.5, 3, 1.5), reelMat);
-                    reelBase.castShadow = true;
-                    group.add(reelBase);
-                    
-                    const symbolsGroup = new THREE.Group();
-                    for (let s = 0; s < 5; s++) {
-                        const canvas = document.createElement('canvas');
-                        canvas.width = 256;
-                        canvas.height = 256;
-                        const ctx = canvas.getContext('2d');
-                        ctx.fillStyle = '#000000';
-                        ctx.fillRect(0, 0, 256, 256);
-                        ctx.fillStyle = '#' + colors[Math.floor(Math.random() * colors.length)].toString(16);
-                        ctx.font = 'bold 180px Arial';
-                        ctx.fillText(symbols[Math.floor(Math.random() * symbols.length)], 128, 180);
-                        const texture = new THREE.CanvasTexture(canvas);
-                        const symbolMat = new THREE.MeshStandardMaterial({ map: texture });
-                        const symbolPlane = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 1.2), symbolMat);
-                        symbolPlane.position.y = 1 - s * 0.6;
-                        symbolPlane.castShadow = true;
-                        symbolsGroup.add(symbolPlane);
-                    }
-                    symbolsGroup.position.z = 0.76;
-                    group.add(symbolsGroup);
-                    group.position.x = i * 2;
-                    scene.add(group);
-                    reels.push({ group, symbolsGroup });
-                }
-                
-                const particleCount = 1000;
-                const particlesGeometry = new THREE.BufferGeometry();
-                const particlesPositions = new Float32Array(particleCount * 3);
-                for (let i = 0; i < particleCount; i++) {
-                    particlesPositions[i*3] = (Math.random() - 0.5) * 100;
-                    particlesPositions[i*3+1] = (Math.random() - 0.5) * 20;
-                    particlesPositions[i*3+2] = (Math.random() - 0.5) * 50;
-                }
-                particlesGeometry.setAttribute('position', new THREE.BufferAttribute(particlesPositions, 3));
-                const particlesMat = new THREE.PointsMaterial({ color: 0x00ff00, size: 0.05 });
-                const particles = new THREE.Points(particlesGeometry, particlesMat);
-                scene.add(particles);
-                
-                let spinning = false;
-                let spinTime = 0;
-                let spinDuration = 1000;
-                let spinResult = null;
-                
-                function animate() {
-                    requestAnimationFrame(animate);
-                    
-                    if (spinning) {
-                        spinTime += 16;
-                        const progress = Math.min(1, spinTime / spinDuration);
-                        const easeOut = 1 - Math.pow(1 - progress, 3);
-                        
-                        reels.forEach((reel, idx) => {
-                            const offset = (progress * 5) % 1;
-                            reel.symbolsGroup.position.y = -offset * 3;
-                            if (reel.symbolsGroup.position.y < -2.5) reel.symbolsGroup.position.y += 3;
-                        });
-                        
-                        if (progress >= 1) {
-                            spinning = false;
-                            if (spinResult) {
-                                const resultDiv = document.getElementById('result');
-                                resultDiv.style.display = 'block';
-                                resultDiv.innerHTML = spinResult.isWin ? '🎉 WIN! +' + spinResult.win + ' CT 🎉' : '😢 LOSE! -' + spinResult.bet + ' CT 😢';
-                                setTimeout(() => resultDiv.style.display = 'none', 3000);
-                                
-                                fetch('/api/casino/result', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ result: spinResult, userId: '${userId}' })
-                                });
-                                spinResult = null;
-                            }
-                        }
-                    }
-                    
-                    controls.update();
-                    particles.rotation.y += 0.002;
-                    renderer.render(scene, camera);
-                }
-                animate();
-                
-                document.getElementById('spin').onclick = async () => {
-                    if (spinning) return;
-                    const bet = parseInt(document.getElementById('bet').value);
-                    if (isNaN(bet) || bet < 25) {
-                        alert('Минимальная ставка 25 CT');
-                        return;
-                    }
-                    
-                    const response = await fetch('/api/casino/spin', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ bet, userId: '${userId}' })
-                    });
-                    const result = await response.json();
-                    
-                    if (!result.success) {
-                        alert(result.message);
-                        return;
-                    }
-                    
-                    document.getElementById('balance').innerText = result.newBalance;
-                    
-                    spinning = true;
-                    spinTime = 0;
-                    spinResult = { isWin: result.isWin, win: result.win, bet: result.bet };
-                };
-                
-                fetch('/api/casino/balance?userId=${userId}').then(r => r.json()).then(d => {
-                    document.getElementById('balance').innerText = d.balance;
-                });
-            </script>
-        </body>
-        </html>
-    `);
-});
-
-// API для 3D казино
-app.post('/api/casino/spin', (req, res) => {
-    const { bet, userId } = req.body;
-    if (!bet || bet < MIN_BET) return res.json({ success: false, message: 'Минимальная ставка 25 CT' });
-    if (!userId) return res.json({ success: false, message: 'Не авторизован' });
-    
-    const userCT = getCT(userId);
-    if (userCT < bet) return res.json({ success: false, message: 'Недостаточно CT' });
-    
-    const isWin = Math.random() < WIN_CHANCE;
-    let win = 0;
-    if (isWin) {
-        const mult = Math.random() < 0.6 ? 2 : (Math.random() < 0.85 ? 3 : 5);
-        win = bet * mult;
-    }
-    
-    if (win > 0) {
-        addCT(userId, win);
-        return res.json({ success: true, isWin: true, win, newBalance: getCT(userId), bet });
-    } else {
-        removeCT(userId, bet);
-        return res.json({ success: true, isWin: false, win: 0, newBalance: getCT(userId), bet });
-    }
-});
-
-app.get('/api/casino/balance', (req, res) => {
-    const userId = req.query.userId;
-    res.json({ balance: getCT(userId) });
-});
-
-// Live графики страница
 app.get('/', (req, res) => {
     res.send(`
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Elliot - Live Crypto Charts</title>
-            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-            <script src="/socket.io/socket.io.js"></script>
+            <title>Elliot Bot - Status</title>
             <style>
-                body { background: #0a0a0f; color: #0f0; font-family: monospace; margin: 0; padding: 20px; }
-                .container { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; }
-                .chart-card { background: #1a1a2e; border-radius: 10px; padding: 20px; width: 600px; border: 1px solid #0f0; }
-                h3 { margin: 0 0 10px 0; text-align: center; }
-                canvas { max-height: 300px; }
-                .price { font-size: 24px; text-align: center; margin-top: 10px; }
-                .up { color: #0f0; }
-                .down { color: #f00; }
+                body { background: #0a0a0f; color: #0f0; font-family: monospace; padding: 20px; text-align: center; }
+                h1 { color: #ff0000; }
             </style>
         </head>
         <body>
-            <h1 style="text-align:center">🤖 ELLIOT - LIVE CRYPTO CHARTS</h1>
-            <div class="container" id="charts"></div>
-            <script>
-                const socket = io();
-                const charts = {};
-                
-                function createChart(id, name, color) {
-                    const container = document.getElementById('charts');
-                    const card = document.createElement('div');
-                    card.className = 'chart-card';
-                    card.id = \`card-\${id}\`;
-                    card.innerHTML = \`
-                        <h3>\${name}</h3>
-                        <canvas id="chart-\${id}" width="500" height="300"></canvas>
-                        <div class="price" id="price-\${id}">Loading...</div>
-                    \`;
-                    container.appendChild(card);
-                    
-                    const ctx = document.getElementById(\`chart-\${id}\`).getContext('2d');
-                    charts[id] = new Chart(ctx, {
-                        type: 'line',
-                        data: { labels: [], datasets: [{ label: name, data: [], borderColor: color, backgroundColor: 'rgba(0,255,0,0.1)', fill: true }] },
-                        options: { responsive: true, maintainAspectRatio: true, scales: { y: { beginAtZero: false } } }
-                    });
-                }
-                
-                socket.on('price-update', (data) => {
-                    for (const [crypto, info] of Object.entries(data)) {
-                        if (!charts[crypto]) createChart(crypto, info.name, info.color);
-                        const chart = charts[crypto];
-                        chart.data.labels.push(new Date().toLocaleTimeString());
-                        chart.data.datasets[0].data.push(info.price);
-                        if (chart.data.labels.length > 30) {
-                            chart.data.labels.shift();
-                            chart.data.datasets[0].data.shift();
-                        }
-                        chart.update();
-                        const priceElem = document.getElementById(\`price-\${crypto}\`);
-                        priceElem.innerHTML = \`💰 \${info.price} CT \${info.change > 0 ? '📈' : info.change < 0 ? '📉' : '➡️'} (\${info.change > 0 ? '+' : ''}\${info.change}%)\`;
-                        priceElem.className = \`price \${info.change > 0 ? 'up' : info.change < 0 ? 'down' : ''}\`;
-                    }
-                });
-            </script>
+            <h1>🤖 ELLIOT BOT</h1>
+            <p>Bot is online and running!</p>
+            <p>Commands: !помощь</p>
         </body>
         </html>
     `);
 });
 
-function broadcastPrices() {
-    const data = {};
-    for (const [crypto, info] of Object.entries(cryptoPrices)) {
-        const oldPrice = info.history[info.history.length - 2]?.price || info.price;
-        const change = ((info.price - oldPrice) / oldPrice * 100).toFixed(1);
-        data[crypto] = {
-            name: info.name,
-            price: info.price,
-            change: parseFloat(change),
-            color: crypto === 'e-corp' ? '#ff0000' : crypto === 'Nb' ? '#00ff00' : crypto === 'Fsociety' ? '#00aaff' : '#ffaa00'
-        };
-    }
-    io.emit('price-update', data);
-}
-
-server.listen(3000, () => console.log('📊 Web-сервер запущен на http://localhost:3000'));
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`📊 Web-сервер запущен на порту ${PORT}`);
+});
 
 // ========== ЗАГРУЗКА/СОХРАНЕНИЕ ==========
 function loadData() {
@@ -1366,7 +975,6 @@ function loadData() {
     try { userQuests = new Map(Object.entries(JSON.parse(fs.readFileSync('userQuests.json')))); } catch(e) {}
     try { userQuestProgress = new Map(Object.entries(JSON.parse(fs.readFileSync('userQuestProgress.json')))); } catch(e) {}
     try { casinoWinCount = new Map(Object.entries(JSON.parse(fs.readFileSync('casinoWins.json')))); } catch(e) {}
-    try { dailyStats = new Map(Object.entries(JSON.parse(fs.readFileSync('dailyStats.json')))); } catch(e) {}
     try { casinoSpent = new Map(Object.entries(JSON.parse(fs.readFileSync('casinoSpent.json')))); } catch(e) {}
     try { oneTimeSpent = new Map(Object.entries(JSON.parse(fs.readFileSync('oneTimeSpent.json')))); } catch(e) {}
     try { transfersMade = new Map(Object.entries(JSON.parse(fs.readFileSync('transfersMade.json')))); } catch(e) {}
@@ -1420,7 +1028,6 @@ function saveData() {
     fs.writeFileSync('userQuests.json', JSON.stringify(Object.fromEntries(userQuests), null, 2));
     fs.writeFileSync('userQuestProgress.json', JSON.stringify(Object.fromEntries(userQuestProgress), null, 2));
     fs.writeFileSync('casinoWins.json', JSON.stringify(Object.fromEntries(casinoWinCount), null, 2));
-    fs.writeFileSync('dailyStats.json', JSON.stringify(Object.fromEntries(dailyStats), null, 2));
     fs.writeFileSync('casinoSpent.json', JSON.stringify(Object.fromEntries(casinoSpent), null, 2));
     fs.writeFileSync('oneTimeSpent.json', JSON.stringify(Object.fromEntries(oneTimeSpent), null, 2));
     fs.writeFileSync('transfersMade.json', JSON.stringify(Object.fromEntries(transfersMade), null, 2));
@@ -1446,7 +1053,7 @@ function saveData() {
 }
 
 // ========== ОСНОВНОЙ ОБРАБОТЧИК ==========
-client.once('clientReady', () => {
+client.once('ready', () => {
     console.log(`✅ Бот запущен: ${client.user.tag}`);
     loadData();
     client.user.setActivity('!помощь | Хаос-токены');
@@ -1467,6 +1074,7 @@ client.once('clientReady', () => {
     setInterval(() => saveData(), 3600000);
 });
 
+// ========== ОБРАБОТЧИК СООБЩЕНИЙ ==========
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     
@@ -1613,7 +1221,6 @@ client.on('messageCreate', async (message) => {
             const res = await fetch(`https://wttr.in/${encodeURIComponent(city)}?format=%t+%c+%w+%h&lang=ru`);
             const data = await res.text();
             message.reply(`🌍 **${city}**: ${data}`);
-            checkUserQuest(message.author.id, 'weather', 1, message.guild);
         } catch { message.reply('❌ Не удалось получить погоду'); }
     }
     else if (command === 'твит') {
@@ -1624,7 +1231,6 @@ client.on('messageCreate', async (message) => {
             if (titles && titles.length > 1) {
                 const news = titles.slice(1,5).map((t,i)=>`${i+1}. ${t.replace(/<\/?title>/g,'')}`).join('\n');
                 message.reply(`📰 **Новости**\n${news}`);
-                checkUserQuest(message.author.id, 'news', 1, message.guild);
             } else message.reply('❌ Не удалось загрузить новости');
         } catch { message.reply('❌ Ошибка загрузки новостей'); }
     }
@@ -1764,25 +1370,9 @@ client.on('messageCreate', async (message) => {
                 const seconds = sec % 60;
                 return `${d.emoji} ${d.name}: ${minutes} мин ${seconds} сек`;
             }).join('\n');
-            return message.reply(`📈 **Курсы крипты**\n${prices}\n\n⏰ **Следующие обновления:**\n${updatesInfo}\n\n!биржа купить e-corp 100\n!биржа продать Nb 50\n!биржа баланс\n!биржа график e-corp\n!биржа топ`);
+            return message.reply(`📈 **Курсы крипты**\n${prices}\n\n⏰ **Следующие обновления:**\n${updatesInfo}\n\n!биржа купить e-corp 100\n!биржа продать Nb 50\n!биржа баланс\n!биржа топ`);
         }
         if (action === 'топ') return message.reply(`🏆 **Топ трейдеров**\n${getTopTraders() || 'Нет данных'}`);
-        if (action === 'график') {
-            let key = null;
-            const cryptoName = args[1]?.toLowerCase();
-            if (cryptoName === 'e-corp' || cryptoName === 'ecorp') key = 'e-corp';
-            else if (cryptoName === 'nb') key = 'Nb';
-            else if (cryptoName === 'fsociety') key = 'Fsociety';
-            else if (cryptoName === 'kobycoin' || cryptoName === 'kbc') key = 'KobyCoin';
-            if (!key) return message.reply('❌ Доступно: e-corp, Nb, Fsociety, KobyCoin');
-            if (cryptoPrices[key].history.length < 2) return message.reply('❌ Недостаточно данных для графика');
-            try {
-                const buffer = await createCryptoGraph(cryptoPrices[key].name, cryptoPrices[key].history);
-                return message.reply({ files: [{ attachment: buffer, name: `${key}_graph.png` }] });
-            } catch {
-                return message.reply('❌ Ошибка создания графика');
-            }
-        }
         if (action === 'баланс') {
             const uc = userCrypto.get(message.author.id) || { 'e-corp':0, 'Nb':0, 'Fsociety':0, 'KobyCoin':0 };
             const bal = Object.entries(uc).map(([n,a])=>`${cryptoPrices[n]?.emoji} ${cryptoPrices[n]?.name}: ${a} (≈${a*(cryptoPrices[n]?.price||0)} CT)`).join('\n');
@@ -1952,46 +1542,6 @@ client.on('messageCreate', async (message) => {
             ]
         };
         message.reply({ embeds: [embed] });
-    }
-
-    // ========== 3D КАЗИНО ==========
-    else if (command === 'казино_3d') {
-        const embed = {
-            title: '🎰 3D КАЗИНО',
-            description: 'Нажми на кнопку, чтобы открыть 3D-казино с крутыми анимациями!',
-            color: 0xff0000,
-            image: { url: 'https://media.giphy.com/media/3o7abB06u9bNzA8LC8/giphy.gif' }
-        };
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setLabel('🎲 ИГРАТЬ В 3D КАЗИНО')
-                    .setStyle(ButtonStyle.Link)
-                    .setURL(`http://localhost:3000/casino?user=${message.author.id}`)
-            );
-        message.reply({ embeds: [embed], components: [row] });
-    }
-
-    // ========== LIVE ГРАФИКИ ==========
-    else if (command === 'графики') {
-        const embed = {
-            title: '📈 LIVE ГРАФИКИ КРИПТОВАЛЮТ',
-            description: 'Открой страницу с живыми графиками цен!',
-            color: 0x00ff00,
-            fields: Object.entries(cryptoPrices).map(([k, v]) => ({
-                name: `${v.emoji} ${v.name}`,
-                value: `${v.price} CT`,
-                inline: true
-            }))
-        };
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setLabel('📊 ОТКРЫТЬ ГРАФИКИ')
-                    .setStyle(ButtonStyle.Link)
-                    .setURL('http://localhost:3000')
-            );
-        message.reply({ embeds: [embed], components: [row] });
     }
 
     // ========== КАЗИНО ==========
@@ -2169,6 +1719,41 @@ client.on('messageCreate', async (message) => {
             const bet = 500;
             if (getCT(message.author.id) < bet) return message.reply('❌ Недостаточно CT для игры');
             
+            class SniperGame {
+                constructor(userId, bet) {
+                    this.userId = userId;
+                    this.bet = bet;
+                    this.startTime = Date.now();
+                    this.target = Math.floor(Math.random() * 8);
+                    this.attempts = 0;
+                    this.maxAttempts = 3;
+                    this.gameOver = false;
+                }
+                
+                shoot(guess) {
+                    if (this.gameOver) return { success: false, message: "Игра окончена" };
+                    if (Date.now() - this.startTime > 120000) {
+                        this.gameOver = true;
+                        return { success: false, message: "Время вышло! (2 минуты)" };
+                    }
+                    
+                    this.attempts++;
+                    
+                    if (guess === this.target) {
+                        this.gameOver = true;
+                        const winAmount = this.bet * 2;
+                        return { success: true, win: winAmount, message: `🎯 Точное попадание! Цифра была ${this.target}` };
+                    } else {
+                        if (this.attempts >= this.maxAttempts) {
+                            this.gameOver = true;
+                            return { success: false, message: `💥 Промах! Цифра была ${this.target}. Вы проиграли ${this.bet} CT` };
+                        }
+                        const hint = guess < this.target ? 'больше' : 'меньше';
+                        return { success: false, message: `❌ Не угадал! Цифра ${hint}. Осталось попыток: ${this.maxAttempts - this.attempts}` };
+                    }
+                }
+            }
+            
             const game = new SniperGame(message.author.id, bet);
             sniperGames.set(message.author.id, game);
             return message.reply(`🎯 **МИНИ-ИГРА: СНАЙПЕРКА**\nСтавка: ${bet} CT\n\nЦифра загадана от 0 до 7.\nУ вас 3 попытки и 2 минуты.\n\nВведите: \`!выстрел [число]\``);
@@ -2192,45 +1777,8 @@ client.on('messageCreate', async (message) => {
         setRobberyCooldown(message.author.id);
     }
 
-    // ========== СНАЙПЕРКА (МИНИ-ИГРА) ==========
-    class SniperGame {
-        constructor(userId, bet) {
-            this.userId = userId;
-            this.bet = bet;
-            this.startTime = Date.now();
-            this.target = Math.floor(Math.random() * 8);
-            this.attempts = 0;
-            this.maxAttempts = 3;
-            this.gameOver = false;
-        }
-        
-        shoot(guess) {
-            if (this.gameOver) return { success: false, message: "Игра окончена" };
-            if (Date.now() - this.startTime > 120000) {
-                this.gameOver = true;
-                return { success: false, message: "Время вышло! (2 минуты)" };
-            }
-            
-            this.attempts++;
-            
-            if (guess === this.target) {
-                this.gameOver = true;
-                const winAmount = this.bet * 2;
-                return { success: true, win: winAmount, message: `🎯 Точное попадание! Цифра была ${this.target}` };
-            } else {
-                if (this.attempts >= this.maxAttempts) {
-                    this.gameOver = true;
-                    return { success: false, message: `💥 Промах! Цифра была ${this.target}. Вы проиграли ${this.bet} CT` };
-                }
-                const hint = guess < this.target ? 'больше' : 'меньше';
-                return { success: false, message: `❌ Не угадал! Цифра ${hint}. Осталось попыток: ${this.maxAttempts - this.attempts}` };
-            }
-        }
-    }
-
-    let sniperGames = new Map();
-
-    if (command === 'выстрел') {
+    // ========== СНАЙПЕРКА (ВЫСТРЕЛ) ==========
+    else if (command === 'выстрел') {
         const guess = parseInt(args[0]);
         if (isNaN(guess) || guess < 0 || guess > 7) return message.reply('❌ Введите число от 0 до 7');
         
@@ -2488,15 +2036,13 @@ client.on('messageCreate', async (message) => {
                 { name: '🔫 Оружие', value: '!оружие, !купить_оружие, !продать_оружие, !моё_оружие, !щит, !купить_щит' },
                 { name: '🃏 NFT', value: '!лутбокс — открыть NFT-карточку (500 CT)\n!коллекция — посмотреть свои NFT\n!бонусы_nft — активные бонусы' },
                 { name: '💱 Курс CT→₽', value: '!курс_ct, !продать_ct' },
-                { name: '📈 Биржа', value: '!биржа — курсы (КД 5-30 мин)\n!биржа купить/продать, !биржа баланс, !биржа график, !биржа топ' },
-                { name: '🎭 События', value: '!джекпот, !дуэль, !сценарий, !ограбить\n⏰ КД: дуэль 5 мин, сценарий 30 мин, ограбление 30 мин' },
+                { name: '📈 Биржа', value: '!биржа — курсы (КД 5-30 мин)\n!биржа купить/продать, !биржа баланс, !биржа топ' },
+                { name: '🎭 События', value: '!дуэль, !сценарий, !ограбить\n⏰ КД: дуэль 5 мин, сценарий 30 мин, ограбление 30 мин' },
                 { name: '🎯 Снайперка', value: '!купить_снайперку — 100% успех, но нужна мини-игра\n!выстрел [0-7] — угадай число' },
                 { name: '✨ Бусты', value: '!бусты — проверить активные бусты\nКаждый час 5% шанс получить x2 буст!' },
                 { name: '📜 Квесты', value: '!квесты (обновление каждые 3 часа)' },
                 { name: '🏆 Топ', value: '!топ, !топ_трейдеров, !топ_полный' },
                 { name: '🏅 Ачивки', value: '!ачивки — 18 достижений' },
-                { name: '🎮 3D Казино', value: '!казино_3d — открыть 3D казино в браузере' },
-                { name: '📊 Графики', value: '!графики — открыть live графики крипты' },
                 { name: '🛒 Магазин', value: '!магазин, !купить роль' }
             ],
             footer: { text: '🎰 Шанс выигрыша 20% | 5% от проигрыша в джекпот | 1 CT = ' + ctRate.toFixed(4) + ' ₽' }
