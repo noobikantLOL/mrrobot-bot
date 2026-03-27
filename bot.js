@@ -35,7 +35,11 @@ const DAILY_REWARD = 50;
 const DAILY_STREAK_BONUS = 500;
 const MAX_NFT_INVENTORY = 3;
 const NFT_SELL_RETURN = 0.2;
-const RPS_COOLDOWN = 180000; // 3 минуты
+const RPS_COOLDOWN = 180000;
+const LOOTBOX_COOLDOWN = 1800000;
+const NFT_SELL_COOLDOWN = 300000;
+const NEWS_COOLDOWN = 7200000;
+const SNIPER_COOLDOWN = 600000;
 
 const client = new Client({
     intents: [
@@ -85,17 +89,56 @@ let hackGames = new Map();
 let userNFTs = new Map();
 let lastBoostCheck = Date.now();
 let sniperGames = new Map();
+let sniperCooldown = new Map();
 let dailyClaims = new Map();
 let lastNewsTime = 0;
 let pendingNFTTrades = new Map();
 let rpsCooldown = new Map();
+let lootboxCooldown = new Map();
+let nftSellCooldown = new Map();
+
+// ========== КЛАСС ДЛЯ СНАЙПЕРКИ ==========
+class SniperGame {
+    constructor(userId, bet) {
+        this.userId = userId;
+        this.bet = bet;
+        this.startTime = Date.now();
+        this.target = Math.floor(Math.random() * 8);
+        this.attempts = 0;
+        this.maxAttempts = 3;
+        this.gameOver = false;
+    }
+    
+    shoot(guess) {
+        if (this.gameOver) return { success: false, message: "Игра окончена" };
+        if (Date.now() - this.startTime > 120000) {
+            this.gameOver = true;
+            return { success: false, message: "⏰ Время вышло! (2 минуты)" };
+        }
+        
+        this.attempts++;
+        
+        if (guess === this.target) {
+            this.gameOver = true;
+            const winAmount = this.bet * 2;
+            return { success: true, win: winAmount, message: `🎯 Точное попадание! Цифра была ${this.target}` };
+        } else {
+            if (this.attempts >= this.maxAttempts) {
+                this.gameOver = true;
+                return { success: false, message: `💥 Промах! Цифра была ${this.target}. Вы проиграли ${this.bet} CT` };
+            }
+            const hint = guess < this.target ? 'больше' : 'меньше';
+            return { success: false, message: `❌ Не угадал! Цифра ${hint}. Осталось попыток: ${this.maxAttempts - this.attempts}` };
+        }
+    }
+}
 
 // ========== КУРС CT → РУБЛЬ ==========
 let ctRate = 0.001;
 let marketVolume = 0;
 let marketHistory = [];
 
-// ========== БИРЖА (ТВОИ КУРСЫ) ==========
+// ========== БИРЖА ==========
 let cryptoPrices = {
     'e-corp': { price: 9379, history: [], name: 'E-Corp', emoji: '🏢', minPrice: 40, nextUpdate: Date.now(), lastUpdate: Date.now() },
     'Nb': { price: 302, history: [], name: 'Nb', emoji: '💎', minPrice: 30, nextUpdate: Date.now(), lastUpdate: Date.now() },
@@ -104,18 +147,32 @@ let cryptoPrices = {
 };
 
 // ========== НОВОСТИ ДЛЯ БИРЖИ ==========
-const CRYPTO_NEWS = [
-    { text: "E-Corp замешан в скандале с данными!", effect: "down", percent: 5 },
-    { text: "Fsociety выпустила новый эксплойт!", effect: "up", percent: 8 },
-    { text: "Белая Роза инвестирует в Nb", effect: "up", percent: 4 },
-    { text: "Правительство расследует KobyCoin", effect: "down", percent: 6 },
-    { text: "Dark Army взломала биржу!", effect: "down", percent: 10 },
-    { text: "Мистер Робот поддерживает Fsociety", effect: "up", percent: 7 },
-    { text: "E-Corp отчитался о прибыли", effect: "up", percent: 3 },
-    { text: "Хакеры украли 1000 KobyCoin", effect: "down", percent: 8 },
-    { text: "Новый патч безопасности для Nb", effect: "up", percent: 5 },
-    { text: "Elliot Alderson разоблачил коррупцию", effect: "up", percent: 12 }
-];
+const CRYPTO_NEWS_MAP = {
+    'e-corp': [
+        { text: "E-Corp замешан в скандале с данными!", effect: "down", percent: 5 },
+        { text: "E-Corp отчитался о рекордной прибыли", effect: "up", percent: 8 },
+        { text: "Правительство оштрафовало E-Corp", effect: "down", percent: 6 },
+        { text: "E-Corp запускает новый продукт", effect: "up", percent: 4 }
+    ],
+    'Nb': [
+        { text: "Nb интегрируют в Dark Army", effect: "up", percent: 7 },
+        { text: "Белая Роза инвестирует в Nb", effect: "up", percent: 10 },
+        { text: "Уязвимость в сети Nb", effect: "down", percent: 5 },
+        { text: "Новый патч безопасности для Nb", effect: "up", percent: 4 }
+    ],
+    'Fsociety': [
+        { text: "Fsociety выпустила новый эксплойт!", effect: "up", percent: 12 },
+        { text: "Мистер Робот поддерживает Fsociety", effect: "up", percent: 8 },
+        { text: "Полиция ищет лидеров Fsociety", effect: "down", percent: 6 },
+        { text: "Fsociety взломала E-Corp", effect: "up", percent: 15 }
+    ],
+    'KobyCoin': [
+        { text: "KobyCoin листинг на крупной бирже", effect: "up", percent: 20 },
+        { text: "Хакеры украли 1000 KobyCoin", effect: "down", percent: 10 },
+        { text: "Elliot Alderson поддержал KobyCoin", effect: "up", percent: 12 },
+        { text: "KobyCoin падает на фоне новостей", effect: "down", percent: 7 }
+    ]
+};
 
 // ========== ОРУЖИЕ ==========
 const WEAPONS = {
@@ -339,6 +396,7 @@ function getWeapon(userId) {
 function getUserNFTBonuses(userId) {
     const nfts = userNFTs.get(userId) || [];
     let bonuses = { scenario: 0, robbery: 0, casino: 0, exchange: 0, hack: 0, all: 0 };
+    
     nfts.forEach(nft => {
         let bonusValue = 0;
         if (nft.rarity === 'mythic') bonusValue = 0.5;
@@ -348,13 +406,18 @@ function getUserNFTBonuses(userId) {
         else if (nft.rarity === 'special') bonusValue = 0.15;
         else bonusValue = 0.02;
         
-        if (nft.name.includes('сценариям')) bonuses.scenario += bonusValue;
-        else if (nft.name.includes('ограблениям')) bonuses.robbery += bonusValue;
-        else if (nft.name.includes('казино')) bonuses.casino += bonusValue;
-        else if (nft.name.includes('бирже')) bonuses.exchange += bonusValue;
-        else if (nft.name.includes('взлому')) bonuses.hack += bonusValue;
-        else if (nft.name.includes('всему')) bonuses.all += bonusValue;
+        const name = nft.name.toLowerCase();
+        if (name.includes('сценариям')) bonuses.scenario += bonusValue;
+        else if (name.includes('ограблениям')) bonuses.robbery += bonusValue;
+        else if (name.includes('казино')) bonuses.casino += bonusValue;
+        else if (name.includes('бирже')) bonuses.exchange += bonusValue;
+        else if (name.includes('взлому')) bonuses.hack += bonusValue;
+        else if (name.includes('всему')) bonuses.all += bonusValue;
+        else {
+            bonuses.all += bonusValue;
+        }
     });
+    
     return bonuses;
 }
 
@@ -510,17 +573,20 @@ function getDailyReward(userId) {
 // ========== БИРЖЕВЫЕ НОВОСТИ ==========
 async function sendCryptoNews(guild) {
     const now = Date.now();
-    if (now - lastNewsTime < 1800000) return;
+    if (now - lastNewsTime < NEWS_COOLDOWN) return;
     
     const channel = guild.channels.cache.find(c => c.name === 'основа');
     if (!channel) return;
     
-    const news = CRYPTO_NEWS[Math.floor(Math.random() * CRYPTO_NEWS.length)];
     const cryptoNames = Object.keys(cryptoPrices);
     const selectedCrypto = cryptoNames[Math.floor(Math.random() * cryptoNames.length)];
     const cryptoData = cryptoPrices[selectedCrypto];
+    const newsList = CRYPTO_NEWS_MAP[selectedCrypto] || CRYPTO_NEWS_MAP['e-corp'];
+    const news = newsList[Math.floor(Math.random() * newsList.length)];
     
+    let oldPrice = cryptoData.price;
     let priceChange = 0;
+    
     if (news.effect === "up") {
         priceChange = news.percent;
         cryptoData.price = Math.floor(cryptoData.price * (1 + priceChange / 100));
@@ -534,7 +600,7 @@ async function sendCryptoNews(guild) {
     if (cryptoData.history.length > 50) cryptoData.history.shift();
     
     const emoji = priceChange > 0 ? "📈" : "📉";
-    await channel.send(`📰 **БИРЖЕВЫЕ НОВОСТИ**\n${news.text}\n\n${cryptoData.emoji} **${cryptoData.name}** ${emoji} ${Math.abs(priceChange)}%!\nНовая цена: ${cryptoData.price} CT`);
+    await channel.send(`📰 **БИРЖЕВЫЕ НОВОСТИ**\n${news.text}\n\n${cryptoData.emoji} **${cryptoData.name}** ${emoji} ${Math.abs(priceChange)}%!\n${oldPrice} CT → ${cryptoData.price} CT`);
     
     lastNewsTime = now;
     saveData();
@@ -548,23 +614,28 @@ async function getCryptoChart(cryptoKey, cryptoName) {
     const prices = crypto.history.map(h => h.price);
     const labels = crypto.history.map((_, i) => i + 1);
     
-    const chartUrl = `https://quickchart.io/chart?c={
+    const chartData = {
         type: 'line',
         data: {
-            labels: [${labels.join(',')}],
-            datasets: [{ 
-                label: '${cryptoName} (CT)',
-                data: [${prices.join(',')}],
+            labels: labels,
+            datasets: [{
+                label: `${cryptoName} (CT)`,
+                data: prices,
                 borderColor: '#0f0',
                 backgroundColor: 'rgba(0,255,0,0.1)',
-                fill: true
+                fill: true,
+                tension: 0.3
             }]
         },
         options: {
-            title: { display: true, text: '${cryptoName} - История цены' },
-            scales: { y: { beginAtZero: false } }
+            title: { display: true, text: `${cryptoName} - История цены` },
+            scales: { y: { beginAtZero: false } },
+            plugins: { legend: { display: true, position: 'top' } }
         }
-    }`;
+    };
+    
+    const encodedData = encodeURIComponent(JSON.stringify(chartData));
+    const chartUrl = `https://quickchart.io/chart?c=${encodedData}&width=800&height=400&backgroundColor=%231a1a2e&devicePixelRatio=2`;
     
     return chartUrl;
 }
@@ -652,7 +723,7 @@ class HackGame {
                                      this.currentServer === 'FSociety' ? 2 : 6) * hackBonus;
                 const win = this.bet * winMultiplier;
                 addCT(this.userId, win);
-                return { success: true, win, message: `🎉 Взлом **${this.currentServer}** успешен! +${win} CT! ${hackBonus > 1 ? `(x${hackBonus} NFT бонус)` : ''}` };
+                return { success: true, win, message: `🎉 Взлом **${this.currentServer}** успешен! +${win} CT! ${hackBonus > 1 ? `(x${hackBonus.toFixed(2)} NFT бонус)` : ''}` };
             }
             return { success: true, message: `✅ ${this.steps[this.currentStep - 1].toUpperCase()} пройден! Следующий шаг: ${this.steps[this.currentStep]}` };
         } else {
@@ -1205,7 +1276,6 @@ function loadData() {
     try { const jp = JSON.parse(fs.readFileSync('jackpot.json')); jackpot = jp.jackpot || JACKPOT_START; } catch(e) {}
     try { const prices = JSON.parse(fs.readFileSync('cryptoPrices.json')); for (let c in prices) cryptoPrices[c] = prices[c]; } catch(e) {}
     
-    // ТВОИ КУРСЫ (принудительно)
     cryptoPrices['e-corp'].price = 9379;
     cryptoPrices['Nb'].price = 302;
     cryptoPrices['Fsociety'].price = 45;
@@ -1320,6 +1390,7 @@ client.on('messageCreate', async (message) => {
 
     // ========== КОМАНДЫ ==========
     
+    // Ежедневный бонус
     if (command === 'ежедневный' || command === 'бонус') {
         const result = getDailyReward(message.author.id);
         if (!result.success) {
@@ -1330,10 +1401,12 @@ client.on('messageCreate', async (message) => {
         }
     }
     
+    // Джекпот
     else if (command === 'джекпот') {
         message.reply(`💰 **ТЕКУЩИЙ ДЖЕКПОТ**: ${jackpot} CT! 🎰\nШанс выиграть: 2% в слотах!`);
     }
     
+    // График
     else if (command === 'график') {
         const cryptoName = args[0]?.toLowerCase();
         let cryptoKey = null;
@@ -1346,26 +1419,43 @@ client.on('messageCreate', async (message) => {
             return message.reply('❌ Доступно: e-corp, Nb, Fsociety, KobyCoin\nПример: `!график e-corp`');
         }
         
-        const chartUrl = await getCryptoChart(cryptoKey, cryptoPrices[cryptoKey].name);
+        const crypto = cryptoPrices[cryptoKey];
+        if (!crypto || crypto.history.length < 3) {
+            return message.reply('❌ Недостаточно данных для графика. Подождите 10-15 минут.');
+        }
+        
+        const chartUrl = await getCryptoChart(cryptoKey, crypto.name);
         if (!chartUrl) {
-            return message.reply('❌ Недостаточно данных для графика. Подождите немного.');
+            return message.reply('❌ Ошибка создания графика. Попробуйте позже.');
         }
         
         const embed = new EmbedBuilder()
-            .setTitle(`📈 График ${cryptoPrices[cryptoKey].name}`)
+            .setTitle(`📈 График ${crypto.name}`)
             .setImage(chartUrl)
             .setColor(0x00ff00)
-            .setFooter({ text: `Текущая цена: ${cryptoPrices[cryptoKey].price} CT` });
+            .setFooter({ text: `Текущая цена: ${crypto.price} CT | Обновляется каждые 5-30 мин` });
         
-        message.reply({ embeds: [embed] });
+        message.reply({ embeds: [embed] }).catch(() => {
+            message.reply(`📈 **${crypto.name}**\nТекущая цена: ${crypto.price} CT\nГрафик временно недоступен.`);
+        });
     }
     
+    // Топ NFT
     else if (command === 'топ_nft') {
         const top = getTopNFT();
         message.reply(`🃏 **ТОП КОЛЛЕКЦИОНЕРОВ NFT**\n${top || 'Нет данных'}`);
     }
     
+    // Продажа NFT с КД
     else if (command === 'продать_nft') {
+        const cd = nftSellCooldown.get(message.author.id);
+        if (cd && Date.now() < cd) {
+            const remaining = Math.ceil((cd - Date.now()) / 1000);
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            return message.reply(`⏰ Подождите ${minutes} мин ${seconds} сек перед следующей продажей NFT!`);
+        }
+        
         const nftId = args[0];
         if (!nftId) {
             const nfts = getNFTsList(message.author.id);
@@ -1378,10 +1468,92 @@ client.on('messageCreate', async (message) => {
         if (!result.success) {
             message.reply(`❌ ${result.reason}`);
         } else {
-            message.reply(`💰 Продана **${result.nft.emoji} ${result.nft.name}** за ${result.sellPrice} CT! (-80% от стоимости)`);
+            nftSellCooldown.set(message.author.id, Date.now() + NFT_SELL_COOLDOWN);
+            setTimeout(() => nftSellCooldown.delete(message.author.id), NFT_SELL_COOLDOWN);
+            message.reply(`💰 Продана **${result.nft.emoji} ${result.nft.name}** за ${result.sellPrice} CT! (-80% от стоимости)\n⏰ Следующая продажа через 5 минут.`);
         }
     }
     
+    // Лутбокс с КД
+    else if (command === 'лутбокс') {
+        const cd = lootboxCooldown.get(message.author.id);
+        if (cd && Date.now() < cd) {
+            const remaining = Math.ceil((cd - Date.now()) / 1000);
+            const minutes = Math.floor(remaining / 60);
+            const seconds = remaining % 60;
+            return message.reply(`⏰ Подождите ${minutes} мин ${seconds} сек перед открытием следующего лутбокса!`);
+        }
+        
+        const price = 500;
+        if (getCT(message.author.id) < price) return message.reply(`❌ Недостаточно CT! Нужно ${price} CT`);
+        removeCT(message.author.id, price);
+        const result = openLootbox(message.author.id);
+        if (!result.success) {
+            message.reply(`❌ ${result.reason}`);
+            addCT(message.author.id, price);
+        } else {
+            lootboxCooldown.set(message.author.id, Date.now() + LOOTBOX_COOLDOWN);
+            setTimeout(() => lootboxCooldown.delete(message.author.id), LOOTBOX_COOLDOWN);
+            message.reply(`🎁 **Вы открыли лутбокс!**\n📦 Получено: ${result.nft.emoji} **${result.nft.name}** (${result.nft.rarity})\n✨ Бонус: ${result.nft.bonus}\n💰 Стоимость: ${result.nft.price} CT\n⏰ Следующий лутбокс через 30 минут.`);
+            checkAchievements(message.author.id, message.guild);
+        }
+    }
+    
+    // Коллекция NFT
+    else if (command === 'коллекция') {
+        const nfts = userNFTs.get(message.author.id) || [];
+        if (nfts.length === 0) return message.reply('❌ У вас нет NFT-карточек');
+        
+        const byRarity = {
+            mythic: nfts.filter(n => n.rarity === 'mythic'),
+            legendary: nfts.filter(n => n.rarity === 'legendary'),
+            epic: nfts.filter(n => n.rarity === 'epic'),
+            special: nfts.filter(n => n.rarity === 'special'),
+            rare: nfts.filter(n => n.rarity === 'rare'),
+            common: nfts.filter(n => n.rarity === 'common')
+        };
+        
+        const embed = {
+            title: '🃏 ВАША NFT КОЛЛЕКЦИЯ',
+            color: 0xffd700,
+            fields: [
+                { name: '👑 Мифические', value: byRarity.mythic.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true },
+                { name: '💎 Легендарные', value: byRarity.legendary.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true },
+                { name: '✨ Эпические', value: byRarity.epic.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true },
+                { name: '⭐ Специальные', value: byRarity.special.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true },
+                { name: '🎴 Редкие', value: byRarity.rare.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true },
+                { name: '📦 Обычные', value: byRarity.common.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true }
+            ],
+            footer: { text: `Всего карточек: ${nfts.length} / ${MAX_NFT_INVENTORY} (макс)` }
+        };
+        message.reply({ embeds: [embed] });
+    }
+    
+    // Бонусы NFT
+    else if (command === 'бонусы_nft') {
+        const bonuses = getUserNFTBonuses(message.author.id);
+        const scenarioBonus = Math.round((bonuses.scenario + bonuses.all) * 100);
+        const robberyBonus = Math.round((bonuses.robbery + bonuses.all) * 100);
+        const casinoBonus = Math.round((bonuses.casino + bonuses.all) * 100);
+        const exchangeBonus = Math.round((bonuses.exchange + bonuses.all) * 100);
+        const hackBonus = Math.round((bonuses.hack + bonuses.all) * 100);
+        
+        const embed = {
+            title: '✨ АКТИВНЫЕ БОНУСЫ NFT',
+            color: 0x00ff00,
+            fields: [
+                { name: '🎭 Сценарии', value: `+${scenarioBonus}%`, inline: true },
+                { name: '🏴‍☠️ Ограбления', value: `+${robberyBonus}%`, inline: true },
+                { name: '🎰 Казино', value: `+${casinoBonus}%`, inline: true },
+                { name: '📈 Биржа', value: `+${exchangeBonus}%`, inline: true },
+                { name: '💻 Взлом', value: `+${hackBonus}%`, inline: true }
+            ],
+            footer: { text: 'Бонусы суммируются от всех NFT' }
+        };
+        message.reply({ embeds: [embed] });
+    }
+    
+    // Обмен NFT
     else if (command === 'обменять_nft') {
         const target = await findMemberByName(message.guild, args[0]);
         const nftId = args[1];
@@ -1413,6 +1585,7 @@ client.on('messageCreate', async (message) => {
         message.reply(`🔄 **ЗАПРОС НА ОБМЕН NFT**\n${target.displayName}, пользователь ${message.author.displayName} хочет обменять:\n${nft.emoji} **${nft.name}** (${nft.rarity})\n\nВыберите действие:`, { components: [row] });
     }
     
+    // Инфо о пользователе
     else if (command === 'инфо') {
         const target = await findMemberByName(message.guild, args.join(' ')) || message.member;
         const userId = target.id;
@@ -1433,14 +1606,14 @@ client.on('messageCreate', async (message) => {
                 { name: '🎰 Потрачено в казино', value: `${spent} CT`, inline: true },
                 { name: '🔫 Оружие', value: weapon ? `${weapon.emoji} ${weapon.name}` : 'нет', inline: true },
                 { name: '🏠 Недвижимость', value: prop ? `${prop.emoji} ${prop.name}` : 'нет', inline: true },
-                { name: '🃏 NFT', value: `${nftCount} карточек`, inline: true },
+                { name: '🃏 NFT', value: `${nftCount}/${MAX_NFT_INVENTORY} карточек`, inline: true },
                 { name: '🔥 Стрик', value: `${streak} дней`, inline: true }
             );
         
         message.reply({ embeds: [embed] });
     }
     
-    // ========== КНБ С КД 3 МИНУТЫ ==========
+    // КНБ с КД
     else if (command === 'кнб') {
         const cd = rpsCooldown.get(message.author.id);
         if (cd && Date.now() < cd) {
@@ -1461,7 +1634,99 @@ client.on('messageCreate', async (message) => {
         setTimeout(() => rpsCooldown.delete(message.author.id), RPS_COOLDOWN);
     }
     
-    // ========== ОСТАЛЬНЫЕ КОМАНДЫ ==========
+    // СНАЙПЕРКА (ИСПРАВЛЕННАЯ)
+    else if (command === 'ограбить') {
+        const target = await findMemberByName(message.guild, args[0]);
+        if (!target) return message.reply('❌ !ограбить @игрок');
+        if (target.id === message.author.id) return message.reply('❌ Нельзя себя');
+        if (hasShield(target.id)) return message.reply(`🛡️ У ${target.displayName} активен щит!`);
+        
+        const cd = checkRobberyCooldown(message.author.id);
+        if (cd.onCooldown) return message.reply(`⏰ Подождите ${cd.minutes} мин ${cd.seconds} сек`);
+        
+        const targetCT = getCT(target.id);
+        const robberCT = getCT(message.author.id);
+        if (targetCT < 100) return message.reply(`❌ У ${target.displayName} меньше 100 CT`);
+        if (robberCT < 50) return message.reply('❌ У тебя меньше 50 CT');
+        
+        const weapon = getWeapon(message.author.id);
+        
+        // СНАЙПЕРКА
+        if (weapon && weapon.name === 'Снайперка') {
+            const sniperCd = sniperCooldown.get(message.author.id);
+            if (sniperCd && Date.now() < sniperCd) {
+                const remaining = Math.ceil((sniperCd - Date.now()) / 1000);
+                const minutes = Math.floor(remaining / 60);
+                const seconds = remaining % 60;
+                return message.reply(`⏰ Вы уже использовали снайперку! Следующая игра через ${minutes} мин ${seconds} сек.`);
+            }
+            
+            if (sniperGames.has(message.author.id)) {
+                return message.reply('❌ У вас уже активна игра в снайперку!');
+            }
+            
+            const bet = 500;
+            if (getCT(message.author.id) < bet) {
+                return message.reply('❌ Недостаточно CT для игры (нужно 500 CT)');
+            }
+            
+            removeCT(message.author.id, bet);
+            const game = new SniperGame(message.author.id, bet);
+            sniperGames.set(message.author.id, game);
+            
+            return message.reply(`🎯 **МИНИ-ИГРА: СНАЙПЕРКА**\nСтавка: ${bet} CT\n\nЦифра загадана от 0 до 7.\nУ вас 3 попытки и 2 минуты.\n\nВведите: \`!выстрел [число]\``);
+        }
+        
+        // Обычное ограбление
+        const successChance = getRobberyChance(message.author.id);
+        const success = Math.random() < successChance;
+        
+        if (success) {
+            const stolen = Math.floor(targetCT * (0.1 + Math.random() * 0.2));
+            removeCT(target.id, stolen);
+            addCT(message.author.id, stolen);
+            message.reply(`🏴‍☠️ Успех! ${weapon ? `С ${weapon.emoji} ${weapon.name} ` : ''}Ты украл ${stolen} CT у ${target.displayName}!`);
+            checkUserQuest(message.author.id, 'rob', 1, message.guild);
+        } else {
+            const lost = Math.floor(robberCT * 0.1);
+            removeCT(message.author.id, lost);
+            addCT(target.id, lost);
+            message.reply(`😵 Провал! ${weapon ? `Даже ${weapon.name} не помог... ` : ''}Ты потерял ${lost} CT и отдал ${target.displayName}!`);
+        }
+        setRobberyCooldown(message.author.id);
+    }
+    
+    else if (command === 'выстрел') {
+        const guess = parseInt(args[0]);
+        if (isNaN(guess) || guess < 0 || guess > 7) {
+            return message.reply('❌ Введите число от 0 до 7');
+        }
+        
+        const game = sniperGames.get(message.author.id);
+        if (!game) {
+            return message.reply('❌ Нет активной игры. Используйте !ограбить с оружием "Снайперка"');
+        }
+        
+        const result = game.shoot(guess);
+        
+        if (result.success) {
+            sniperGames.delete(message.author.id);
+            sniperCooldown.set(message.author.id, Date.now() + SNIPER_COOLDOWN);
+            setTimeout(() => sniperCooldown.delete(message.author.id), SNIPER_COOLDOWN);
+            addCT(message.author.id, result.win);
+            message.reply(`${result.message}\n💰 Выигрыш: ${result.win} CT!\n⏰ Следующая снайперка через 10 минут.`);
+            checkUserQuest(message.author.id, 'rob', 1, message.guild);
+        } else if (result.message.includes("Промах") || result.message.includes("Время вышло")) {
+            sniperGames.delete(message.author.id);
+            sniperCooldown.set(message.author.id, Date.now() + SNIPER_COOLDOWN);
+            setTimeout(() => sniperCooldown.delete(message.author.id), SNIPER_COOLDOWN);
+            message.reply(`${result.message}\n⏰ Следующая снайперка через 10 минут.`);
+        } else {
+            message.reply(result.message);
+        }
+    }
+    
+    // ========== ГОЛОСОВЫЕ КОМАНДЫ ==========
     else if (command === 'войс') {
         if (!message.member.voice.channel) return message.reply('❌ Ты не в войсе');
         let conn = voiceConnections.get(message.guild.id);
@@ -1534,347 +1799,8 @@ client.on('messageCreate', async (message) => {
         await member.voice.setChannel(ch);
         message.reply(`🔄 ${member.displayName} → ${ch.name}`);
     }
-    else if (command === 'брось_кубик') { message.reply(`🎲 ${Math.floor(Math.random()*6)+1}`); }
-    else if (command === 'монетка') { message.reply(`🪙 ${Math.random()>0.5?'Орёл':'Решка'}`); }
-    else if (command === 'монетка_ставка') {
-        const bet = parseInt(args[0]);
-        if (isNaN(bet) || bet < MIN_BET) return message.reply(`❌ Минимальная ставка ${MIN_BET} CT`);
-        const cd = checkCasinoCooldown(message.author.id);
-        if (cd.onCooldown) {
-            casinoCooldownAttempts.set(message.author.id, (casinoCooldownAttempts.get(message.author.id)||0)+1);
-            checkAchievements(message.author.id, message.guild);
-            return message.reply(`⏰ Подождите ${cd.remaining} сек`);
-        }
-        if (!removeCT(message.author.id, bet)) return message.reply('❌ Недостаточно CT');
-        setCasinoCooldown(message.author.id);
-        const { result, win } = coinFlip(bet, message.author.id);
-        addCT(message.author.id, win);
-        checkUserQuest(message.author.id, 'casino', 1, message.guild);
-        if (win > 0) checkUserQuest(message.author.id, 'casino_win', 1, message.guild);
-        message.reply(`🪙 ${result}\n${win>0?`Выигрыш ${win} CT`:`Проигрыш ${bet} CT`}`);
-    }
-    else if (command === 'картинка') { message.reply({ embeds:[{image:{url:"https://media.giphy.com/media/3o7abB06u9bNzA8LC8/giphy.gif"}}] }); }
-    else if (command === 'погода') {
-        const city = args.join(' ') || 'Москва';
-        try {
-            const res = await fetch(`https://wttr.in/${encodeURIComponent(city)}?format=%t+%c+%w+%h&lang=ru`);
-            const data = await res.text();
-            message.reply(`🌍 **${city}**: ${data}`);
-        } catch { message.reply('❌ Не удалось получить погоду'); }
-    }
-    else if (command === 'твит') {
-        try {
-            const res = await fetch('https://lenta.ru/rss/news');
-            const txt = await res.text();
-            const titles = txt.match(/<title>(.*?)<\/title>/g);
-            if (titles && titles.length > 1) {
-                const news = titles.slice(1,5).map((t,i)=>`${i+1}. ${t.replace(/<\/?title>/g,'')}`).join('\n');
-                message.reply(`📰 **Новости**\n${news}`);
-            } else message.reply('❌ Не удалось загрузить новости');
-        } catch { message.reply('❌ Ошибка загрузки новостей'); }
-    }
-    else if (command === 'розыгрыш') {
-        const botVc = message.guild.members.me.voice.channel;
-        if (!botVc) return message.reply('❌ Бот не в войсе, используй !войс');
-        const members = botVc.members.filter(m => !m.user.bot);
-        if (!members.size) return message.reply('❌ Нет участников');
-        const winner = members.random();
-        addCT(winner.id, 50);
-        message.reply(`🎉 Победитель: ${winner.displayName} +50 CT!`);
-        checkUserQuest(message.author.id, 'raffle', 1, message.guild);
-    }
-    else if (command === 'курс_ct') {
-        const ctPerRub = Math.floor(1 / ctRate);
-        const rubPer1000Ct = (1000 * ctRate).toFixed(2);
-        message.reply(`💰 **Курс Хаос-токена**:\n1 ₽ = **${ctPerRub} CT**\n1000 CT = **${rubPer1000Ct} ₽**\n📊 Объём торгов за день: ${marketVolume} CT\n📈 История: ${marketHistory.slice(-5).map(h=>`${(1/h.rate).toFixed(0)} CT/₽`).join(' → ')}`);
-    }
-    else if (command === 'продать_ct') {
-        const amount = parseInt(args[0]);
-        if (isNaN(amount) || amount < 50) return message.reply('❌ Минимальная продажа 50 CT');
-        if (getCT(message.author.id) < amount) return message.reply('❌ Недостаточно CT');
-        const revenue = amount * ctRate;
-        sellRequests.set(message.author.id, { amount, revenue, type: 'sell', date: Date.now(), status: 'pending' });
-        saveData();
-        message.reply(`✅ Заявка на продажу **${amount} CT** создана!\n💰 Вы получите: ${revenue.toFixed(2)} ₽\n📩 Админ свяжется с тобой`);
-        const adminChannel = message.guild.channels.cache.find(c => c.name === 'админ-чат');
-        if (adminChannel) adminChannel.send(`🔔 **НОВАЯ ЗАЯВКА!**\n👤 ${message.author.tag}\n📤 Продажа ${amount} CT (${revenue.toFixed(2)} ₽)\n!обработать ${message.author.id} продать ${amount}`);
-    }
-    else if (command === 'недвижимость') {
-        const list = Object.entries(PROPERTIES).map(([k, p]) => `${p.emoji} **${p.name}** — ${p.price} CT (доход: ${p.income} CT/${Math.floor(p.cooldown/3600000)}ч, продажа: ${p.sellPrice} CT)`).join('\n');
-        message.reply(`🏠 **НЕДВИЖИМОСТЬ**\n${list}\n\n!купить_дом [название]\n!собрать_доход\n!продать_дом`);
-    }
-    else if (command === 'купить_дом') {
-        const propName = args.join(' ');
-        let key = null;
-        for (let k in PROPERTIES) {
-            if (PROPERTIES[k].name.toLowerCase() === propName.toLowerCase()) key = k;
-        }
-        if (!key) return message.reply('❌ Доступно: хибара, квартира, дом, особняк, будка, подвал, замок');
-        const result = buyProperty(message.author.id, key);
-        if (result.success) {
-            message.reply(`🏠 Вы купили **${result.property.name}** ${result.property.emoji} за ${result.property.price} CT!\n💰 Доход: ${result.property.income} CT каждые ${Math.floor(result.property.cooldown/3600000)} ч`);
-            checkAchievements(message.author.id, message.guild);
-        } else {
-            message.reply(`❌ ${result.reason}`);
-        }
-    }
-    else if (command === 'собрать_доход') {
-        const result = collectIncome(message.author.id);
-        if (result.success) {
-            message.reply(`🏠 Вы собрали доход с **${result.property.name}**: +${result.income} CT!`);
-        } else {
-            message.reply(`❌ ${result.reason}`);
-        }
-    }
-    else if (command === 'продать_дом') {
-        const result = sellProperty(message.author.id);
-        if (result.success) {
-            message.reply(`🏠 Вы продали **${result.property.name}** за ${result.sellPrice} CT! (-30% от стоимости покупки)`);
-        } else {
-            message.reply(`❌ ${result.reason}`);
-        }
-    }
-    else if (command === 'моя_недвижимость') {
-        const prop = getProperty(message.author.id);
-        if (!prop) return message.reply('🏠 У вас нет недвижимости');
-        const lastIncome = lastIncomeTime.get(message.author.id) || 0;
-        const timeLeft = Math.max(0, prop.cooldown - (Date.now() - lastIncome));
-        const hoursLeft = Math.floor(timeLeft / 3600000);
-        const minutesLeft = Math.floor((timeLeft % 3600000) / 60000);
-        message.reply(`🏠 **Ваша недвижимость**: ${prop.emoji} ${prop.name}\n💰 Доход: ${prop.income} CT/${Math.floor(prop.cooldown/3600000)}ч\n⏰ Следующий доход через: ${hoursLeft} ч ${minutesLeft} мин`);
-    }
-    else if (command === 'оружие') {
-        const list = Object.entries(WEAPONS).map(([k, w]) => `${w.emoji} **${w.name}** — ${w.price} CT (шанс успеха: ${w.chance*100}%, продажа: ${w.sellPrice} CT)`).join('\n');
-        message.reply(`🔫 **ОРУЖИЕ**\n${list}\n\n!купить_оружие [название]\n!продать_оружие\n!моё_оружие`);
-    }
-    else if (command === 'купить_оружие') {
-        const weaponName = args[0]?.toLowerCase();
-        if (!weaponName || !WEAPONS[weaponName]) return message.reply('❌ Доступно: бита, нож, пистолет, снайперка');
-        const result = buyWeapon(message.author.id, weaponName);
-        if (result.success) {
-            message.reply(`🔫 Вы купили **${result.weapon.name}** ${result.weapon.emoji} за ${result.weapon.price} CT!\n🎯 Шанс успеха при ограблении: ${result.weapon.chance*100}%`);
-            checkAchievements(message.author.id, message.guild);
-        } else {
-            message.reply(`❌ ${result.reason}`);
-        }
-    }
-    else if (command === 'продать_оружие') {
-        const result = sellWeapon(message.author.id);
-        if (result.success) {
-            message.reply(`🔫 Вы продали **${result.weapon.name}** за ${result.sellPrice} CT! (-15% от стоимости покупки)`);
-        } else {
-            message.reply(`❌ ${result.reason}`);
-        }
-    }
-    else if (command === 'моё_оружие') {
-        const weapon = getWeapon(message.author.id);
-        if (!weapon) return message.reply('🔫 У вас нет оружия');
-        message.reply(`🔫 Ваше оружие: ${weapon.emoji} **${weapon.name}** (шанс успеха: ${weapon.chance*100}%)`);
-    }
-    else if (command === 'щит') {
-        const shield = userShield.get(message.author.id);
-        if (shield && shield.expires > Date.now()) {
-            const hoursLeft = Math.floor((shield.expires - Date.now()) / 3600000);
-            const minutesLeft = Math.floor(((shield.expires - Date.now()) % 3600000) / 60000);
-            message.reply(`🛡️ У вас активен щит! Защита от ограблений. Осталось: ${hoursLeft} ч ${minutesLeft} мин`);
-        } else {
-            message.reply(`🛡️ У вас нет щита. Купить за 1000 CT: !купить_щит (защита на 6 часов)`);
-        }
-    }
-    else if (command === 'купить_щит') {
-        const result = buyShield(message.author.id);
-        if (result.success) {
-            message.reply(`🛡️ Вы купили щит за 1000 CT! Он защитит вас от ограблений в течение 6 часов.`);
-        } else {
-            message.reply(`❌ ${result.reason}`);
-        }
-    }
-    else if (command === 'биржа') {
-        const action = args[0]?.toLowerCase();
-        const crypto = args[1]?.toLowerCase();
-        const amount = parseInt(args[2]);
-        if (!action) {
-            const prices = Object.entries(cryptoPrices).map(([k,d])=>`${d.emoji} **${d.name}**: ${d.price} CT`).join('\n');
-            const updatesInfo = Object.entries(cryptoPrices).map(([k,d]) => {
-                const sec = getNextUpdateTimeForCrypto(k);
-                const minutes = Math.floor(sec / 60);
-                const seconds = sec % 60;
-                return `${d.emoji} ${d.name}: ${minutes} мин ${seconds} сек`;
-            }).join('\n');
-            return message.reply(`📈 **Курсы крипты**\n${prices}\n\n⏰ **Следующие обновления:**\n${updatesInfo}\n\n!биржа купить e-corp 100\n!биржа продать Nb 50\n!биржа баланс\n!биржа топ`);
-        }
-        if (action === 'топ') return message.reply(`🏆 **Топ трейдеров**\n${getTopTraders() || 'Нет данных'}`);
-        if (action === 'баланс') {
-            const uc = userCrypto.get(message.author.id) || { 'e-corp':0, 'Nb':0, 'Fsociety':0, 'KobyCoin':0 };
-            const bal = Object.entries(uc).map(([n,a])=>`${cryptoPrices[n]?.emoji} ${cryptoPrices[n]?.name}: ${a} (≈${a*(cryptoPrices[n]?.price||0)} CT)`).join('\n');
-            return message.reply(`💰 **Крипто-портфель**\n${bal}\nОбщая стоимость: ${Object.entries(uc).reduce((s,[n,a])=>s+a*(cryptoPrices[n]?.price||0),0)} CT`);
-        }
-        let key = null;
-        if (crypto === 'e-corp' || crypto === 'ecorp') key = 'e-corp';
-        else if (crypto === 'nb') key = 'Nb';
-        else if (crypto === 'fsociety') key = 'Fsociety';
-        else if (crypto === 'kobycoin' || crypto === 'kbc') key = 'KobyCoin';
-        if (!key) return message.reply('❌ Доступно: e-corp, Nb, Fsociety, KobyCoin');
-        if (action === 'купить') {
-            if (isNaN(amount) || amount < 1) return message.reply('❌ Укажите количество');
-            const cost = amount * cryptoPrices[key].price;
-            if (getCT(message.author.id) < cost) return message.reply(`❌ Недостаточно CT, нужно ${cost}`);
-            removeCT(message.author.id, cost);
-            const uc = userCrypto.get(message.author.id) || { 'e-corp':0, 'Nb':0, 'Fsociety':0, 'KobyCoin':0 };
-            uc[key] = (uc[key]||0) + amount;
-            userCrypto.set(message.author.id, uc);
-            const stats = traderStats.get(message.author.id) || { profit:0, trades:0 };
-            stats.trades++;
-            traderStats.set(message.author.id, stats);
-            saveData();
-            message.reply(`✅ Куплено ${amount} ${cryptoPrices[key].name} за ${cost} CT`);
-            checkUserQuest(message.author.id, 'crypto_trade', 1, message.guild);
-        } else if (action === 'продать') {
-            if (isNaN(amount) || amount < 1) return message.reply('❌ Укажите количество');
-            const uc = userCrypto.get(message.author.id) || { 'e-corp':0, 'Nb':0, 'Fsociety':0, 'KobyCoin':0 };
-            if ((uc[key]||0) < amount) return message.reply('❌ Нет столько');
-            const revenue = amount * cryptoPrices[key].price;
-            uc[key] -= amount;
-            userCrypto.set(message.author.id, uc);
-            const multiplier = getExchangeMultiplier(message.author.id);
-            const finalRevenue = revenue * multiplier;
-            addCT(message.author.id, finalRevenue);
-            const stats = traderStats.get(message.author.id) || { profit:0, trades:0 };
-            stats.trades++;
-            stats.profit += finalRevenue - (amount * (cryptoPrices[key].history[cryptoPrices[key].history.length-2]?.price || cryptoPrices[key].price));
-            traderStats.set(message.author.id, stats);
-            saveData();
-            message.reply(`✅ Продано ${amount} ${cryptoPrices[key].name} за ${finalRevenue} CT! ${multiplier > 1 ? `(x${multiplier} ${multiplier > 2 ? 'NFT бонус + буст' : 'бонус'})` : ''}`);
-            checkUserQuest(message.author.id, 'crypto_trade', 1, message.guild);
-            checkUserQuest(message.author.id, 'crypto_profit', finalRevenue - (amount * (cryptoPrices[key].history[cryptoPrices[key].history.length-2]?.price || cryptoPrices[key].price)), message.guild);
-            checkAchievements(message.author.id, message.guild);
-        }
-    }
-    else if (command === 'бинарный_код') {
-        const bet = parseInt(args[0]);
-        if (isNaN(bet) || bet < MIN_BET) return message.reply(`❌ Минимальная ставка ${MIN_BET} CT`);
-        if (getCT(message.author.id) < bet) return message.reply('❌ Недостаточно CT');
-        
-        const cd = checkBinaryCooldown(message.author.id);
-        if (cd.onCooldown) {
-            return message.reply(`⏰ Подождите **${cd.minutes} мин ${cd.seconds} сек** перед следующей игрой в бинарный код!`);
-        }
-        
-        if (binaryGames.has(message.author.id)) {
-            return message.reply('❌ У вас уже есть активная игра! Закончите её командой !угадать [0/1]');
-        }
-        
-        removeCT(message.author.id, bet);
-        const { sequence, bet: gameBet } = startBinaryGame(message.author.id, bet);
-        setBinaryCooldown(message.author.id);
-        message.reply(`🔢 **БИНАРНЫЙ КОД**\nСтавка: ${gameBet} CT\n\nПоследовательность: \`${sequence}\`\n\nКакой следующий бит? (0 или 1)\nОтветьте: \`!угадать 0\` или \`!угадать 1\``);
-    }
-    else if (command === 'угадать') {
-        const guess = args[0];
-        if (!binaryGames.has(message.author.id)) return message.reply('❌ Нет активной игры. Начните новую: !бинарный_код [ставка]');
-        if (guess !== '0' && guess !== '1') return message.reply('❌ Угадывать нужно 0 или 1');
-        
-        const result = checkBinaryGuess(message.author.id, guess);
-        if (result.error) return message.reply(result.error);
-        if (result.lose) {
-            message.reply(result.message);
-        } else if (result.win) {
-            message.reply(`${result.message}\n💰 Выигрыш: ${result.win} CT`);
-            checkUserQuest(message.author.id, 'binary_win', 1, message.guild);
-        } else {
-            message.reply(`${result.message}\n\nНовая последовательность: \`${result.nextSequence}\`\nОсталось угадать: ${result.guesses}/3`);
-        }
-    }
-    else if (command === 'взлом') {
-        const bet = parseInt(args[0]);
-        if (isNaN(bet) || bet < MIN_BET) return message.reply(`❌ Минимальная ставка ${MIN_BET} CT`);
-        if (getCT(message.author.id) < bet) return message.reply('❌ Недостаточно CT');
-        
-        if (hackGames.has(message.author.id)) return message.reply('❌ У вас уже активна игра во взлом!');
-        
-        removeCT(message.author.id, bet);
-        const game = new HackGame(message.author.id, bet);
-        hackGames.set(message.author.id, game);
-        
-        const validTools = game.tools.scan.join(', ');
-        message.reply(`💻 **НАЧАЛО ВЗЛОМА**\nЦель: ${game.currentServer}\nСтавка: ${bet} CT\n\nШаг 1: СКАНИРОВАНИЕ (scan)\nИспользуйте инструменты: ${validTools}\n\nПример: \`!сканировать nmap\``);
-    }
-    else if (command === 'сканировать' || command === 'эксплуатировать' || command === 'очистить') {
-        const game = hackGames.get(message.author.id);
-        if (!game) return message.reply('❌ Нет активной игры! Начните новую: !взлом 100');
-        
-        const choice = args[0]?.toLowerCase();
-        if (!choice) return message.reply(`❌ Укажите инструмент. Доступно: ${game.tools[game.steps[game.currentStep]].join(', ')}`);
-        
-        const result = game.processStep(choice);
-        if (result.success) {
-            if (result.win) {
-                hackGames.delete(message.author.id);
-                message.reply(`${result.message}\n💰 Выигрыш: ${result.win} CT`);
-                checkUserQuest(message.author.id, 'hack_win', 1, message.guild);
-            } else {
-                message.reply(result.message);
-            }
-        } else {
-            hackGames.delete(message.author.id);
-            message.reply(result.message);
-        }
-    }
-    else if (command === 'лутбокс') {
-        const price = 500;
-        if (getCT(message.author.id) < price) return message.reply(`❌ Недостаточно CT! Нужно ${price} CT`);
-        removeCT(message.author.id, price);
-        const result = openLootbox(message.author.id);
-        if (!result.success) {
-            message.reply(`❌ ${result.reason}`);
-        } else {
-            message.reply(`🎁 **Вы открыли лутбокс!**\n📦 Получено: ${result.nft.emoji} **${result.nft.name}** (${result.nft.rarity})\n✨ Бонус: ${result.nft.bonus}\n💰 Стоимость: ${result.nft.price} CT`);
-            checkAchievements(message.author.id, message.guild);
-        }
-    }
-    else if (command === 'коллекция') {
-        const nfts = userNFTs.get(message.author.id) || [];
-        if (nfts.length === 0) return message.reply('❌ У вас нет NFT-карточек');
-        
-        const byRarity = {
-            mythic: nfts.filter(n => n.rarity === 'mythic'),
-            legendary: nfts.filter(n => n.rarity === 'legendary'),
-            epic: nfts.filter(n => n.rarity === 'epic'),
-            special: nfts.filter(n => n.rarity === 'special'),
-            rare: nfts.filter(n => n.rarity === 'rare'),
-            common: nfts.filter(n => n.rarity === 'common')
-        };
-        
-        const embed = {
-            title: '🃏 ВАША NFT КОЛЛЕКЦИЯ',
-            color: 0xffd700,
-            fields: [
-                { name: '👑 Мифические', value: byRarity.mythic.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true },
-                { name: '💎 Легендарные', value: byRarity.legendary.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true },
-                { name: '✨ Эпические', value: byRarity.epic.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true },
-                { name: '⭐ Специальные', value: byRarity.special.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true },
-                { name: '🎴 Редкие', value: byRarity.rare.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true },
-                { name: '📦 Обычные', value: byRarity.common.map(n => `${n.emoji} ${n.name} (ID: \`${n.id}\`)`).join('\n') || 'Нет', inline: true }
-            ],
-            footer: { text: `Всего карточек: ${nfts.length} / ${MAX_NFT_INVENTORY} (макс)` }
-        };
-        message.reply({ embeds: [embed] });
-    }
-    else if (command === 'бонусы_nft') {
-        const bonuses = getUserNFTBonuses(message.author.id);
-        const embed = {
-            title: '✨ АКТИВНЫЕ БОНУСЫ NFT',
-            color: 0x00ff00,
-            fields: [
-                { name: '🎭 Сценарии', value: `+${Math.round((bonuses.scenario + bonuses.all) * 100)}%`, inline: true },
-                { name: '🏴‍☠️ Ограбления', value: `+${Math.round((bonuses.robbery + bonuses.all) * 100)}%`, inline: true },
-                { name: '🎰 Казино', value: `+${Math.round((bonuses.casino + bonuses.all) * 100)}%`, inline: true },
-                { name: '📈 Биржа', value: `+${Math.round((bonuses.exchange + bonuses.all) * 100)}%`, inline: true },
-                { name: '💻 Взлом', value: `+${Math.round((bonuses.hack + bonuses.all) * 100)}%`, inline: true }
-            ]
-        };
-        message.reply({ embeds: [embed] });
-    }
+    
+    // ========== КАЗИНО ==========
     else if (command === 'слоты') {
         const bet = parseInt(args[0]);
         if (isNaN(bet) || bet < MIN_BET) return message.reply(`❌ Минимальная ставка ${MIN_BET} CT`);
@@ -1980,6 +1906,308 @@ client.on('messageCreate', async (message) => {
             message.reply(`💥 БАХ! Тайм-аут 10 мин (${cnt}/5)`);
         } else { addCT(message.author.id, 50); message.reply(`🍀 Выжил +50 CT`); checkUserQuest(message.author.id, 'casino', 1, message.guild); }
     }
+    else if (command === 'монетка_ставка') {
+        const bet = parseInt(args[0]);
+        if (isNaN(bet) || bet < MIN_BET) return message.reply(`❌ Минимальная ставка ${MIN_BET} CT`);
+        const cd = checkCasinoCooldown(message.author.id);
+        if (cd.onCooldown) {
+            casinoCooldownAttempts.set(message.author.id, (casinoCooldownAttempts.get(message.author.id)||0)+1);
+            checkAchievements(message.author.id, message.guild);
+            return message.reply(`⏰ Подождите ${cd.remaining} сек`);
+        }
+        if (!removeCT(message.author.id, bet)) return message.reply('❌ Недостаточно CT');
+        setCasinoCooldown(message.author.id);
+        const { result, win } = coinFlip(bet, message.author.id);
+        addCT(message.author.id, win);
+        checkUserQuest(message.author.id, 'casino', 1, message.guild);
+        if (win > 0) checkUserQuest(message.author.id, 'casino_win', 1, message.guild);
+        message.reply(`🪙 ${result}\n${win>0?`Выигрыш ${win} CT`:`Проигрыш ${bet} CT`}`);
+    }
+    else if (command === 'монетка') { message.reply(`🪙 ${Math.random()>0.5?'Орёл':'Решка'}`); }
+    else if (command === 'брось_кубик') { message.reply(`🎲 ${Math.floor(Math.random()*6)+1}`); }
+    else if (command === 'картинка') { message.reply({ embeds:[{image:{url:"https://media.giphy.com/media/3o7abB06u9bNzA8LC8/giphy.gif"}}] }); }
+    
+    // ========== ПОГОДА, ТВИТ, РОЗЫГРЫШ ==========
+    else if (command === 'погода') {
+        const city = args.join(' ') || 'Москва';
+        try {
+            const res = await fetch(`https://wttr.in/${encodeURIComponent(city)}?format=%t+%c+%w+%h&lang=ru`);
+            const data = await res.text();
+            message.reply(`🌍 **${city}**: ${data}`);
+        } catch { message.reply('❌ Не удалось получить погоду'); }
+    }
+    else if (command === 'твит') {
+        try {
+            const res = await fetch('https://lenta.ru/rss/news');
+            const txt = await res.text();
+            const titles = txt.match(/<title>(.*?)<\/title>/g);
+            if (titles && titles.length > 1) {
+                const news = titles.slice(1,5).map((t,i)=>`${i+1}. ${t.replace(/<\/?title>/g,'')}`).join('\n');
+                message.reply(`📰 **Новости**\n${news}`);
+            } else message.reply('❌ Не удалось загрузить новости');
+        } catch { message.reply('❌ Ошибка загрузки новостей'); }
+    }
+    else if (command === 'розыгрыш') {
+        const botVc = message.guild.members.me.voice.channel;
+        if (!botVc) return message.reply('❌ Бот не в войсе, используй !войс');
+        const members = botVc.members.filter(m => !m.user.bot);
+        if (!members.size) return message.reply('❌ Нет участников');
+        const winner = members.random();
+        addCT(winner.id, 50);
+        message.reply(`🎉 Победитель: ${winner.displayName} +50 CT!`);
+        checkUserQuest(message.author.id, 'raffle', 1, message.guild);
+    }
+    
+    // ========== КУРС CT → РУБЛЬ ==========
+    else if (command === 'курс_ct') {
+        const ctPerRub = Math.floor(1 / ctRate);
+        const rubPer1000Ct = (1000 * ctRate).toFixed(2);
+        message.reply(`💰 **Курс Хаос-токена**:\n1 ₽ = **${ctPerRub} CT**\n1000 CT = **${rubPer1000Ct} ₽**\n📊 Объём торгов за день: ${marketVolume} CT\n📈 История: ${marketHistory.slice(-5).map(h=>`${(1/h.rate).toFixed(0)} CT/₽`).join(' → ')}`);
+    }
+    else if (command === 'продать_ct') {
+        const amount = parseInt(args[0]);
+        if (isNaN(amount) || amount < 50) return message.reply('❌ Минимальная продажа 50 CT');
+        if (getCT(message.author.id) < amount) return message.reply('❌ Недостаточно CT');
+        const revenue = amount * ctRate;
+        sellRequests.set(message.author.id, { amount, revenue, type: 'sell', date: Date.now(), status: 'pending' });
+        saveData();
+        message.reply(`✅ Заявка на продажу **${amount} CT** создана!\n💰 Вы получите: ${revenue.toFixed(2)} ₽\n📩 Админ свяжется с тобой`);
+        const adminChannel = message.guild.channels.cache.find(c => c.name === 'админ-чат');
+        if (adminChannel) adminChannel.send(`🔔 **НОВАЯ ЗАЯВКА!**\n👤 ${message.author.tag}\n📤 Продажа ${amount} CT (${revenue.toFixed(2)} ₽)\n!обработать ${message.author.id} продать ${amount}`);
+    }
+    
+    // ========== НЕДВИЖИМОСТЬ ==========
+    else if (command === 'недвижимость') {
+        const list = Object.entries(PROPERTIES).map(([k, p]) => `${p.emoji} **${p.name}** — ${p.price} CT (доход: ${p.income} CT/${Math.floor(p.cooldown/3600000)}ч, продажа: ${p.sellPrice} CT)`).join('\n');
+        message.reply(`🏠 **НЕДВИЖИМОСТЬ**\n${list}\n\n!купить_дом [название]\n!собрать_доход\n!продать_дом`);
+    }
+    else if (command === 'купить_дом') {
+        const propName = args.join(' ');
+        let key = null;
+        for (let k in PROPERTIES) {
+            if (PROPERTIES[k].name.toLowerCase() === propName.toLowerCase()) key = k;
+        }
+        if (!key) return message.reply('❌ Доступно: хибара, квартира, дом, особняк, будка, подвал, замок');
+        const result = buyProperty(message.author.id, key);
+        if (result.success) {
+            message.reply(`🏠 Вы купили **${result.property.name}** ${result.property.emoji} за ${result.property.price} CT!\n💰 Доход: ${result.property.income} CT каждые ${Math.floor(result.property.cooldown/3600000)} ч`);
+            checkAchievements(message.author.id, message.guild);
+        } else {
+            message.reply(`❌ ${result.reason}`);
+        }
+    }
+    else if (command === 'собрать_доход') {
+        const result = collectIncome(message.author.id);
+        if (result.success) {
+            message.reply(`🏠 Вы собрали доход с **${result.property.name}**: +${result.income} CT!`);
+        } else {
+            message.reply(`❌ ${result.reason}`);
+        }
+    }
+    else if (command === 'продать_дом') {
+        const result = sellProperty(message.author.id);
+        if (result.success) {
+            message.reply(`🏠 Вы продали **${result.property.name}** за ${result.sellPrice} CT! (-30% от стоимости покупки)`);
+        } else {
+            message.reply(`❌ ${result.reason}`);
+        }
+    }
+    else if (command === 'моя_недвижимость') {
+        const prop = getProperty(message.author.id);
+        if (!prop) return message.reply('🏠 У вас нет недвижимости');
+        const lastIncome = lastIncomeTime.get(message.author.id) || 0;
+        const timeLeft = Math.max(0, prop.cooldown - (Date.now() - lastIncome));
+        const hoursLeft = Math.floor(timeLeft / 3600000);
+        const minutesLeft = Math.floor((timeLeft % 3600000) / 60000);
+        message.reply(`🏠 **Ваша недвижимость**: ${prop.emoji} ${prop.name}\n💰 Доход: ${prop.income} CT/${Math.floor(prop.cooldown/3600000)}ч\n⏰ Следующий доход через: ${hoursLeft} ч ${minutesLeft} мин`);
+    }
+    
+    // ========== ОРУЖИЕ И ЩИТ ==========
+    else if (command === 'оружие') {
+        const list = Object.entries(WEAPONS).map(([k, w]) => `${w.emoji} **${w.name}** — ${w.price} CT (шанс успеха: ${w.chance*100}%, продажа: ${w.sellPrice} CT)`).join('\n');
+        message.reply(`🔫 **ОРУЖИЕ**\n${list}\n\n!купить_оружие [название]\n!продать_оружие\n!моё_оружие`);
+    }
+    else if (command === 'купить_оружие') {
+        const weaponName = args[0]?.toLowerCase();
+        if (!weaponName || !WEAPONS[weaponName]) return message.reply('❌ Доступно: бита, нож, пистолет, снайперка');
+        const result = buyWeapon(message.author.id, weaponName);
+        if (result.success) {
+            message.reply(`🔫 Вы купили **${result.weapon.name}** ${result.weapon.emoji} за ${result.weapon.price} CT!\n🎯 Шанс успеха при ограблении: ${result.weapon.chance*100}%`);
+            checkAchievements(message.author.id, message.guild);
+        } else {
+            message.reply(`❌ ${result.reason}`);
+        }
+    }
+    else if (command === 'продать_оружие') {
+        const result = sellWeapon(message.author.id);
+        if (result.success) {
+            message.reply(`🔫 Вы продали **${result.weapon.name}** за ${result.sellPrice} CT! (-15% от стоимости покупки)`);
+        } else {
+            message.reply(`❌ ${result.reason}`);
+        }
+    }
+    else if (command === 'моё_оружие') {
+        const weapon = getWeapon(message.author.id);
+        if (!weapon) return message.reply('🔫 У вас нет оружия');
+        message.reply(`🔫 Ваше оружие: ${weapon.emoji} **${weapon.name}** (шанс успеха: ${weapon.chance*100}%)`);
+    }
+    else if (command === 'щит') {
+        const shield = userShield.get(message.author.id);
+        if (shield && shield.expires > Date.now()) {
+            const hoursLeft = Math.floor((shield.expires - Date.now()) / 3600000);
+            const minutesLeft = Math.floor(((shield.expires - Date.now()) % 3600000) / 60000);
+            message.reply(`🛡️ У вас активен щит! Защита от ограблений. Осталось: ${hoursLeft} ч ${minutesLeft} мин`);
+        } else {
+            message.reply(`🛡️ У вас нет щита. Купить за 1000 CT: !купить_щит (защита на 6 часов)`);
+        }
+    }
+    else if (command === 'купить_щит') {
+        const result = buyShield(message.author.id);
+        if (result.success) {
+            message.reply(`🛡️ Вы купили щит за 1000 CT! Он защитит вас от ограблений в течение 6 часов.`);
+        } else {
+            message.reply(`❌ ${result.reason}`);
+        }
+    }
+    
+    // ========== БИРЖА ==========
+    else if (command === 'биржа') {
+        const action = args[0]?.toLowerCase();
+        const crypto = args[1]?.toLowerCase();
+        const amount = parseInt(args[2]);
+        if (!action) {
+            const prices = Object.entries(cryptoPrices).map(([k,d])=>`${d.emoji} **${d.name}**: ${d.price} CT`).join('\n');
+            const updatesInfo = Object.entries(cryptoPrices).map(([k,d]) => {
+                const sec = getNextUpdateTimeForCrypto(k);
+                const minutes = Math.floor(sec / 60);
+                const seconds = sec % 60;
+                return `${d.emoji} ${d.name}: ${minutes} мин ${seconds} сек`;
+            }).join('\n');
+            return message.reply(`📈 **Курсы крипты**\n${prices}\n\n⏰ **Следующие обновления:**\n${updatesInfo}\n\n!биржа купить e-corp 100\n!биржа продать Nb 50\n!биржа баланс\n!биржа топ`);
+        }
+        if (action === 'топ') return message.reply(`🏆 **Топ трейдеров**\n${getTopTraders() || 'Нет данных'}`);
+        if (action === 'баланс') {
+            const uc = userCrypto.get(message.author.id) || { 'e-corp':0, 'Nb':0, 'Fsociety':0, 'KobyCoin':0 };
+            const bal = Object.entries(uc).map(([n,a])=>`${cryptoPrices[n]?.emoji} ${cryptoPrices[n]?.name}: ${a} (≈${a*(cryptoPrices[n]?.price||0)} CT)`).join('\n');
+            return message.reply(`💰 **Крипто-портфель**\n${bal}\nОбщая стоимость: ${Object.entries(uc).reduce((s,[n,a])=>s+a*(cryptoPrices[n]?.price||0),0)} CT`);
+        }
+        let key = null;
+        if (crypto === 'e-corp' || crypto === 'ecorp') key = 'e-corp';
+        else if (crypto === 'nb') key = 'Nb';
+        else if (crypto === 'fsociety') key = 'Fsociety';
+        else if (crypto === 'kobycoin' || crypto === 'kbc') key = 'KobyCoin';
+        if (!key) return message.reply('❌ Доступно: e-corp, Nb, Fsociety, KobyCoin');
+        if (action === 'купить') {
+            if (isNaN(amount) || amount < 1) return message.reply('❌ Укажите количество');
+            const cost = amount * cryptoPrices[key].price;
+            if (getCT(message.author.id) < cost) return message.reply(`❌ Недостаточно CT, нужно ${cost}`);
+            removeCT(message.author.id, cost);
+            const uc = userCrypto.get(message.author.id) || { 'e-corp':0, 'Nb':0, 'Fsociety':0, 'KobyCoin':0 };
+            uc[key] = (uc[key]||0) + amount;
+            userCrypto.set(message.author.id, uc);
+            const stats = traderStats.get(message.author.id) || { profit:0, trades:0 };
+            stats.trades++;
+            traderStats.set(message.author.id, stats);
+            saveData();
+            message.reply(`✅ Куплено ${amount} ${cryptoPrices[key].name} за ${cost} CT`);
+            checkUserQuest(message.author.id, 'crypto_trade', 1, message.guild);
+        } else if (action === 'продать') {
+            if (isNaN(amount) || amount < 1) return message.reply('❌ Укажите количество');
+            const uc = userCrypto.get(message.author.id) || { 'e-corp':0, 'Nb':0, 'Fsociety':0, 'KobyCoin':0 };
+            if ((uc[key]||0) < amount) return message.reply('❌ Нет столько');
+            const revenue = amount * cryptoPrices[key].price;
+            uc[key] -= amount;
+            userCrypto.set(message.author.id, uc);
+            const multiplier = getExchangeMultiplier(message.author.id);
+            const finalRevenue = revenue * multiplier;
+            addCT(message.author.id, finalRevenue);
+            const stats = traderStats.get(message.author.id) || { profit:0, trades:0 };
+            stats.trades++;
+            stats.profit += finalRevenue - (amount * (cryptoPrices[key].history[cryptoPrices[key].history.length-2]?.price || cryptoPrices[key].price));
+            traderStats.set(message.author.id, stats);
+            saveData();
+            message.reply(`✅ Продано ${amount} ${cryptoPrices[key].name} за ${finalRevenue} CT! ${multiplier > 1 ? `(x${multiplier.toFixed(2)} бонус)` : ''}`);
+            checkUserQuest(message.author.id, 'crypto_trade', 1, message.guild);
+            checkUserQuest(message.author.id, 'crypto_profit', finalRevenue - (amount * (cryptoPrices[key].history[cryptoPrices[key].history.length-2]?.price || cryptoPrices[key].price)), message.guild);
+            checkAchievements(message.author.id, message.guild);
+        }
+    }
+    
+    // ========== БИНАРНЫЙ КОД ==========
+    else if (command === 'бинарный_код') {
+        const bet = parseInt(args[0]);
+        if (isNaN(bet) || bet < MIN_BET) return message.reply(`❌ Минимальная ставка ${MIN_BET} CT`);
+        if (getCT(message.author.id) < bet) return message.reply('❌ Недостаточно CT');
+        
+        const cd = checkBinaryCooldown(message.author.id);
+        if (cd.onCooldown) {
+            return message.reply(`⏰ Подождите **${cd.minutes} мин ${cd.seconds} сек** перед следующей игрой в бинарный код!`);
+        }
+        
+        if (binaryGames.has(message.author.id)) {
+            return message.reply('❌ У вас уже есть активная игра! Закончите её командой !угадать [0/1]');
+        }
+        
+        removeCT(message.author.id, bet);
+        const { sequence, bet: gameBet } = startBinaryGame(message.author.id, bet);
+        setBinaryCooldown(message.author.id);
+        message.reply(`🔢 **БИНАРНЫЙ КОД**\nСтавка: ${gameBet} CT\n\nПоследовательность: \`${sequence}\`\n\nКакой следующий бит? (0 или 1)\nОтветьте: \`!угадать 0\` или \`!угадать 1\``);
+    }
+    else if (command === 'угадать') {
+        const guess = args[0];
+        if (!binaryGames.has(message.author.id)) return message.reply('❌ Нет активной игры. Начните новую: !бинарный_код [ставка]');
+        if (guess !== '0' && guess !== '1') return message.reply('❌ Угадывать нужно 0 или 1');
+        
+        const result = checkBinaryGuess(message.author.id, guess);
+        if (result.error) return message.reply(result.error);
+        if (result.lose) {
+            message.reply(result.message);
+        } else if (result.win) {
+            message.reply(`${result.message}\n💰 Выигрыш: ${result.win} CT`);
+            checkUserQuest(message.author.id, 'binary_win', 1, message.guild);
+        } else {
+            message.reply(`${result.message}\n\nНовая последовательность: \`${result.nextSequence}\`\nОсталось угадать: ${result.guesses}/3`);
+        }
+    }
+    
+    // ========== ИГРА "ВЗЛОМ" ==========
+    else if (command === 'взлом') {
+        const bet = parseInt(args[0]);
+        if (isNaN(bet) || bet < MIN_BET) return message.reply(`❌ Минимальная ставка ${MIN_BET} CT`);
+        if (getCT(message.author.id) < bet) return message.reply('❌ Недостаточно CT');
+        
+        if (hackGames.has(message.author.id)) return message.reply('❌ У вас уже активна игра во взлом!');
+        
+        removeCT(message.author.id, bet);
+        const game = new HackGame(message.author.id, bet);
+        hackGames.set(message.author.id, game);
+        
+        const validTools = game.tools.scan.join(', ');
+        message.reply(`💻 **НАЧАЛО ВЗЛОМА**\nЦель: ${game.currentServer}\nСтавка: ${bet} CT\n\nШаг 1: СКАНИРОВАНИЕ (scan)\nИспользуйте инструменты: ${validTools}\n\nПример: \`!сканировать nmap\``);
+    }
+    else if (command === 'сканировать' || command === 'эксплуатировать' || command === 'очистить') {
+        const game = hackGames.get(message.author.id);
+        if (!game) return message.reply('❌ Нет активной игры! Начните новую: !взлом 100');
+        
+        const choice = args[0]?.toLowerCase();
+        if (!choice) return message.reply(`❌ Укажите инструмент. Доступно: ${game.tools[game.steps[game.currentStep]].join(', ')}`);
+        
+        const result = game.processStep(choice);
+        if (result.success) {
+            if (result.win) {
+                hackGames.delete(message.author.id);
+                message.reply(`${result.message}\n💰 Выигрыш: ${result.win} CT`);
+                checkUserQuest(message.author.id, 'hack_win', 1, message.guild);
+            } else {
+                message.reply(result.message);
+            }
+        } else {
+            hackGames.delete(message.author.id);
+            message.reply(result.message);
+        }
+    }
+    
+    // ========== СЦЕНАРИЙ ==========
     else if (command === 'сценарий') {
         const cd = checkScenarioCooldown(message.author.id);
         if (cd.onCooldown) return message.reply(`⏰ Подождите ${cd.minutes} мин ${cd.seconds} сек`);
@@ -1993,13 +2221,13 @@ client.on('messageCreate', async (message) => {
         if (sc.success) {
             addCT(message.author.id, finalAmt);
             if (sc.rare) {
-                message.reply(`🎭 **СЕКРЕТНЫЙ СЦЕНАРИЙ!**\n${sc.text} +${finalAmt} CT! ${multiplier > 1 ? `(x${multiplier} бонус)` : ''}`);
+                message.reply(`🎭 **СЕКРЕТНЫЙ СЦЕНАРИЙ!**\n${sc.text} +${finalAmt} CT! ${multiplier > 1 ? `(x${multiplier.toFixed(2)} бонус)` : ''}`);
             } else {
-                message.reply(`🎬 ${sc.text} **${finalAmt} CT**! ${multiplier > 1 ? `(x${multiplier} бонус)` : ''}`);
+                message.reply(`🎬 ${sc.text} **${finalAmt} CT**! ${multiplier > 1 ? `(x${multiplier.toFixed(2)} бонус)` : ''}`);
             }
         } else {
             if (removeCT(message.author.id, finalAmt)) {
-                message.reply(`💀 ${sc.text} **${finalAmt} CT**! ${multiplier > 1 ? `(x${multiplier} бонус)` : ''}`);
+                message.reply(`💀 ${sc.text} **${finalAmt} CT**! ${multiplier > 1 ? `(x${multiplier.toFixed(2)} бонус)` : ''}`);
             } else {
                 message.reply(`💀 ${sc.text} **${getCT(message.author.id)} CT** (всё сгорело)!`);
                 setCT(message.author.id, 0);
@@ -2007,6 +2235,8 @@ client.on('messageCreate', async (message) => {
         }
         setScenarioCooldown(message.author.id);
     }
+    
+    // ========== ДУЭЛЬ ==========
     else if (command === 'дуэль') {
         const target = await findMemberByName(message.guild, args[0]);
         const bet = parseInt(args[1]);
@@ -2023,102 +2253,8 @@ client.on('messageCreate', async (message) => {
         else { addCT(message.author.id, bet); addCT(target.id, bet); message.reply(`🍀 Оба выжили! Ставки возвращены`); }
         setDuelCooldown(message.author.id);
     }
-    else if (command === 'ограбить') {
-        const target = await findMemberByName(message.guild, args[0]);
-        if (!target) return message.reply('❌ !ограбить @игрок');
-        if (target.id === message.author.id) return message.reply('❌ Нельзя себя');
-        if (hasShield(target.id)) return message.reply(`🛡️ У ${target.displayName} активен щит!`);
-        const cd = checkRobberyCooldown(message.author.id);
-        if (cd.onCooldown) return message.reply(`⏰ Подождите ${cd.minutes} мин ${cd.seconds} сек`);
-        const targetCT = getCT(target.id);
-        const robberCT = getCT(message.author.id);
-        if (targetCT < 100) return message.reply(`❌ У ${target.displayName} меньше 100 CT`);
-        if (robberCT < 50) return message.reply('❌ У тебя меньше 50 CT');
-        const weapon = getWeapon(message.author.id);
-        
-        if (weapon && weapon.name === 'Снайперка') {
-            if (sniperGames.has(message.author.id)) {
-                return message.reply('❌ У вас уже активна игра в снайперку!');
-            }
-            const bet = 500;
-            if (getCT(message.author.id) < bet) return message.reply('❌ Недостаточно CT для игры');
-            
-            class SniperGame {
-                constructor(userId, bet) {
-                    this.userId = userId;
-                    this.bet = bet;
-                    this.startTime = Date.now();
-                    this.target = Math.floor(Math.random() * 8);
-                    this.attempts = 0;
-                    this.maxAttempts = 3;
-                    this.gameOver = false;
-                }
-                
-                shoot(guess) {
-                    if (this.gameOver) return { success: false, message: "Игра окончена" };
-                    if (Date.now() - this.startTime > 120000) {
-                        this.gameOver = true;
-                        return { success: false, message: "Время вышло! (2 минуты)" };
-                    }
-                    
-                    this.attempts++;
-                    
-                    if (guess === this.target) {
-                        this.gameOver = true;
-                        const winAmount = this.bet * 2;
-                        return { success: true, win: winAmount, message: `🎯 Точное попадание! Цифра была ${this.target}` };
-                    } else {
-                        if (this.attempts >= this.maxAttempts) {
-                            this.gameOver = true;
-                            return { success: false, message: `💥 Промах! Цифра была ${this.target}. Вы проиграли ${this.bet} CT` };
-                        }
-                        const hint = guess < this.target ? 'больше' : 'меньше';
-                        return { success: false, message: `❌ Не угадал! Цифра ${hint}. Осталось попыток: ${this.maxAttempts - this.attempts}` };
-                    }
-                }
-            }
-            
-            const game = new SniperGame(message.author.id, bet);
-            sniperGames.set(message.author.id, game);
-            return message.reply(`🎯 **МИНИ-ИГРА: СНАЙПЕРКА**\nСтавка: ${bet} CT\n\nЦифра загадана от 0 до 7.\nУ вас 3 попытки и 2 минуты.\n\nВведите: \`!выстрел [число]\``);
-        }
-        
-        const successChance = getRobberyChance(message.author.id);
-        const success = Math.random() < successChance;
-        
-        if (success) {
-            const stolen = Math.floor(targetCT * (0.1 + Math.random() * 0.2));
-            removeCT(target.id, stolen);
-            addCT(message.author.id, stolen);
-            message.reply(`🏴‍☠️ Успех! ${weapon ? `С ${weapon.emoji} ${weapon.name} ` : ''}Ты украл ${stolen} CT у ${target.displayName}!`);
-            checkUserQuest(message.author.id, 'rob', 1, message.guild);
-        } else {
-            const lost = Math.floor(robberCT * 0.1);
-            removeCT(message.author.id, lost);
-            addCT(target.id, lost);
-            message.reply(`😵 Провал! ${weapon ? `Даже ${weapon.name} не помог... ` : ''}Ты потерял ${lost} CT и отдал ${target.displayName}!`);
-        }
-        setRobberyCooldown(message.author.id);
-    }
-    else if (command === 'выстрел') {
-        const guess = parseInt(args[0]);
-        if (isNaN(guess) || guess < 0 || guess > 7) return message.reply('❌ Введите число от 0 до 7');
-        
-        const game = sniperGames.get(message.author.id);
-        if (!game) return message.reply('❌ Нет активной игры. Используйте !ограбить с оружием "Снайперка"');
-        
-        const result = game.shoot(guess);
-        if (result.success) {
-            sniperGames.delete(message.author.id);
-            addCT(message.author.id, result.win);
-            message.reply(`${result.message}\n💰 Выигрыш: ${result.win} CT!`);
-        } else if (result.message.includes("Промах") || result.message.includes("Время вышло")) {
-            sniperGames.delete(message.author.id);
-            message.reply(result.message);
-        } else {
-            message.reply(result.message);
-        }
-    }
+    
+    // ========== ШАХТА ==========
     else if (command === 'шахта' && isAdmin(message.member)) {
         const target = message.mentions.members.first() || await findMemberByName(message.guild, args[0]);
         if (!target) return message.reply('❌ Укажите пользователя');
@@ -2127,6 +2263,8 @@ client.on('messageCreate', async (message) => {
         startMinePunishment(target.id, message.guild);
         message.reply(`⛏️ **${target.displayName}** отправлен в шахту! Бот будет рандомно требовать "КОПАЙ!". Нужно ответить "вскопал" 10 раз. За каждый пропуск прогресс сбрасывается.`);
     }
+    
+    // ========== АДМИН-КОМАНДЫ ==========
     else if (command === 'обнулить_джекпот' && isAdmin(message.member)) { jackpot = JACKPOT_START; saveData(); message.reply(`🎰 Джекпот сброшен`); }
     else if (command === 'обнулить_траты' && isAdmin(message.member)) {
         const target = message.mentions.members.first() || await findMemberByName(message.guild, args[0]);
@@ -2195,6 +2333,8 @@ client.on('messageCreate', async (message) => {
         saveData();
         message.reply(`💰 Курс CT установлен: 1 CT = ${ctRate.toFixed(4)} ₽ (1000 CT = ${(1000 * ctRate).toFixed(2)} ₽)`);
     }
+    
+    // ========== ТОПЫ ==========
     else if (command === 'топ') { message.reply(`🏆 **Топ по CT**\n${getTopCT()}`); }
     else if (command === 'топ_трейдеров') { message.reply(`🏆 **Топ трейдеров**\n${getTopTraders() || 'Нет данных'}`); }
     else if (command === 'топ_полный') {
@@ -2215,6 +2355,8 @@ client.on('messageCreate', async (message) => {
         };
         message.reply({ embeds: [embed] });
     }
+    
+    // ========== БУСТЫ ==========
     else if (command === 'бусты') {
         const boost = activeBoosts.get(message.author.id);
         if (!boost || boost.until <= Date.now()) {
@@ -2231,6 +2373,8 @@ client.on('messageCreate', async (message) => {
         }
         message.reply(`✨ **Активный буст:** ${boostText}\n⏰ Осталось: ${timeLeft} минут`);
     }
+    
+    // ========== КВЕСТЫ ==========
     else if (command === 'квесты') {
         updateUserQuests(message.author.id);
         const q = userQuests.get(message.author.id);
@@ -2245,11 +2389,15 @@ client.on('messageCreate', async (message) => {
         const hours = Math.max(0, Math.round((q.nextUpdate - Date.now())/3600000));
         message.reply(`📜 **Квесты** (обновятся через ${hours}ч)\n${list}`);
     }
+    
+    // ========== АЧИВКИ ==========
     else if (command === 'ачивки') {
         const earned = achievements.get(message.author.id) || [];
         if (!earned.length) return message.reply('🏅 Нет ачивок');
         message.reply(`🏅 **Ваши ачивки**\n${earned.map(k => `🏆 ${ALL_ACHIEVEMENTS[k]?.name}`).join('\n')}`);
     }
+    
+    // ========== БАЛАНС ==========
     else if (command === 'баланс') { 
         const weapon = getWeapon(message.author.id);
         const prop = getProperty(message.author.id);
@@ -2271,6 +2419,8 @@ client.on('messageCreate', async (message) => {
         message.reply(`✅ Передано ${amount} CT ${target.displayName}`);
         checkUserQuest(message.author.id, 'transfer', 1, message.guild);
     }
+    
+    // ========== МАГАЗИН РОЛЕЙ ==========
     else if (command === 'магазин') {
         const list = Array.from(SHOP_ROLES.values()).filter(r=>r.id).map(r=>`${r.name} — ${r.price} CT`).join('\n');
         message.reply(`🛒 **Магазин ролей**\n${list || 'Роли не добавлены'}`);
@@ -2333,23 +2483,25 @@ client.on('messageCreate', async (message) => {
             .setColor(0xff0000)
             .addFields(
                 { name: '🎤 Голос', value: '!войс, !покинуть, !скажи' },
-                { name: '💰 Экономика', value: '!ежедневный, !баланс, !передать, !джекпот' },
-                { name: '🎰 Казино', value: '!слоты, !кости, !рулетка, !русская_рулетка, !рулетка_бесплатно' },
-                { name: '🔢 Бинарный код', value: '!бинарный_код [ставка] — угадай 3 бита подряд (x2)' },
-                { name: '💻 Взлом', value: '!взлом [ставка] — взломай сервер' },
-                { name: '🏠 Недвижимость', value: '!недвижимость, !купить_дом, !собрать_доход, !продать_дом' },
-                { name: '🔫 Оружие', value: '!оружие, !купить_оружие, !продать_оружие, !щит' },
-                { name: '🃏 NFT', value: '!лутбокс, !коллекция, !бонусы_nft, !продать_nft, !обменять_nft, !топ_nft' },
-                { name: '📈 Биржа', value: '!биржа — курсы, !график e-corp, !топ_трейдеров' },
-                { name: '🎭 События', value: '!дуэль, !сценарий, !ограбить' },
+                { name: '👑 Админ', value: '!замутить, !размутить, !забань, !разбань, !отключи, !перекинь, !добавить_роль, !выдать_монеты, !снять_монеты, !установить_монеты, !обнулить_джекпот, !обнулить_траты, !выдать_акции, !забрать_акции, !обработать, !установить_курс, !шахта' },
+                { name: '💰 Экономика', value: '!ежедневный, !баланс, !передать, !джекпот, !курс_ct, !продать_ct' },
+                { name: '🎰 Казино', value: '!слоты, !кости, !рулетка, !русская_рулетка, !рулетка_бесплатно, !монетка_ставка, !монетка, !брось_кубик' },
+                { name: '🔢 Бинарный код', value: '!бинарный_код [ставка] — угадай 3 бита подряд (x2), !угадать [0/1]' },
+                { name: '💻 Взлом', value: '!взлом [ставка] — взломай сервер, !сканировать, !эксплуатировать, !очистить' },
+                { name: '🏠 Недвижимость', value: '!недвижимость, !купить_дом, !собрать_доход, !продать_дом, !моя_недвижимость' },
+                { name: '🔫 Оружие', value: '!оружие, !купить_оружие, !продать_оружие, !моё_оружие, !щит, !купить_щит' },
+                { name: '🃏 NFT', value: '!лутбокс (КД 30 мин), !коллекция, !бонусы_nft, !продать_nft (КД 5 мин), !обменять_nft, !топ_nft' },
+                { name: '📈 Биржа', value: '!биржа — курсы, !график e-corp, !биржа купить/продать, !биржа баланс, !биржа топ, !топ_трейдеров' },
+                { name: '🎭 События', value: '!дуэль, !сценарий, !ограбить (со снайперкой КД 10 мин), !кнб (КД 3 мин)' },
                 { name: '✨ Бусты', value: '!бусты — активные бонусы' },
                 { name: '📜 Квесты', value: '!квесты — обновление каждые 3 часа' },
                 { name: '🏆 Топы', value: '!топ, !топ_трейдеров, !топ_полный, !топ_nft' },
                 { name: '🏅 Ачивки', value: '!ачивки' },
                 { name: '📊 Инфо', value: '!инфо @user — статистика игрока' },
-                { name: '👑 Админ', value: '!замутить, !размутить, !забань, !выдать_монеты, !установить_курс и др.' }
+                { name: '🛒 Магазин', value: '!магазин, !купить роль' },
+                { name: '🌍 Другое', value: '!погода, !твит, !розыгрыш, !картинка, !статус_бота, !размьють_бота' }
             )
-            .setFooter({ text: '🎰 Шанс выигрыша 20% | NFT дают бонусы | Максимум 3 NFT в инвентаре' });
+            .setFooter({ text: '🎰 Шанс выигрыша 20% | NFT дают бонусы | Максимум 3 NFT | КД: снайперка 10 мин, лутбокс 30 мин, продажа NFT 5 мин, КНБ 3 мин' });
         
         message.reply({ embeds: [embed] });
     }
@@ -2378,15 +2530,12 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '❌ NFT больше нет у отправителя.', ephemeral: true });
         }
         
-        // Проверка лимита у получателя
         if (toNFTs.length >= MAX_NFT_INVENTORY) {
             return interaction.reply({ content: `❌ У ${toUser.displayName} уже ${MAX_NFT_INVENTORY} NFT! Не может принять больше.`, ephemeral: true });
         }
         
-        // Проверка лимита у отправителя (после отправки)
         const newFromNFTs = fromNFTs.filter(n => n.id !== trade.nftId);
         
-        // Обмен
         userNFTs.set(trade.fromUserId, newFromNFTs);
         userNFTs.set(toUser.id, [...toNFTs, nftToSend]);
         saveData();
